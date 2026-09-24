@@ -347,3 +347,34 @@ def main():
 
 if __name__ == "__main__":
     main()
+def main():
+    init_db()
+    
+    # Run Flask in background thread for Render
+    Thread(target=run_flask, daemon=True).start()
+    
+    # Initialize Telegram Application
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Bonus Conversation Handler
+    bonus_conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^🎁 Give Bonus$"), give_bonus_start)],
+        states={
+            BONUS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_id_received)],
+            BONUS_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_amount_received)]
+        },
+        fallbacks=[MessageHandler(filters.Regex("^❌ Cancel$"), bonus_cancel)]
+    )
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(bonus_conv_handler)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    logging.basicConfig(level=logging.INFO)
+    print("Bot started successfully...")
+    
+    # Run polling cleanly without conflicts
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
