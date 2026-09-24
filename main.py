@@ -21,7 +21,7 @@ def keep_alive():
     t.start()
 
 # --- কনফিগারেশন ---
-BOT_TOKEN = "8967409217:AAFQUz7WLgnNxHMDASi6AZH28EzLbmepOjQ"      # এখানে আপনার বটের মূল টোকেন বসান
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"      # এখানে আপনার বটের মূল টোকেন বসান
 ADMIN_ID = 8808647263                           # আপনার টেলিগ্রাম নিউমেরিক আইডি
 OFFICIAL_CHANNEL = "@ClickEarnProOfficial"      # আপনার অফিশিয়াল চ্যানেলের ইউজারনেম
 SUPPORT_PHONE = "01720616501"                   # অ্যাডমিন সাপোর্ট নম্বর
