@@ -18,11 +18,13 @@ from telegram.ext import (
 # ---------------------------------------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
 ADMIN_ID = 8808647263  # Fixed Hardcoded Admin ID
+OFFICIAL_CHANNEL = "@YourChannelUsername"  # ⚠️ এখানে আপনার চ্যানেলের Username দিন (যেমন: @clickearn_updates)
 
 # Multi-language text templates
 MESSAGES = {
     'en': {
         'welcome': "👋 Welcome to ClickEarn Pro!\nComplete simple tasks and earn money daily.",
+        'must_join': "⚠️ You MUST join our Official Channel to use this bot!\n\n👉 Join Here: {channel}\n\nAfter joining, send /start again.",
         'balance': "💰 Your Current Balance: ${balance:.4f}",
         'referral': "👥 Your Referral Link:\nhttps://t.me/{bot_username}?start={user_id}\n\nEarn bonus for each active referral!",
         'profile': "👤 Profile Info:\nID: {user_id}\nLanguage: {lang}\nBalance: ${balance:.4f}",
@@ -35,6 +37,7 @@ MESSAGES = {
     },
     'bn': {
         'welcome': "👋 ClickEarn Pro-এ আপনাকে স্বাগতম!\nসহজ কাজ সম্পন্ন করে প্রতিদিন ইনকাম করুন।",
+        'must_join': "⚠️ বটটি ব্যবহার করতে অবশ্যই আমাদের অফিশিয়াল চ্যানেলে জয়েন থাকতে হবে!\n\n👉 চ্যানেল লিংক: {channel}\n\nজয়েন করার পর আবার /start চাপুন।",
         'balance': "💰 আপনার বর্তমান ব্যালেন্স: ${balance:.4f}",
         'referral': "👥 আপনার রেফারেল লিঙ্ক:\nhttps://t.me/{bot_username}?start={user_id}\n\nপ্রতিটি অ্যাক্টিভ রেফারেলে বোনাস পান!",
         'profile': "👤 প্রোফাইল তথ্য:\nআইডি: {user_id}\nভাষা: {lang}\nব্যালেন্স: ${balance:.4f}",
@@ -103,6 +106,19 @@ def add_user_balance(user_id, amount):
     conn.commit()
     conn.close()
 
+# Helper function to check channel membership
+async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    if OFFICIAL_CHANNEL == "@YourChannelUsername":
+        return True  # Skip check if channel username isn't configured yet
+    try:
+        member = await context.bot.get_chat_member(chat_id=OFFICIAL_CHANNEL, user_id=user_id)
+        if member.status in ['creator', 'administrator', 'member']:
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Channel Check Error: {e}")
+        return True
+
 # ---------------------------------------------------------
 # 4. KEYBOARD MENUS SETUP
 # ---------------------------------------------------------
@@ -157,12 +173,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_admin_keyboard(),
             parse_mode="Markdown"
         )
-    else:
-        text = MESSAGES[lang]['welcome']
-        await update.message.reply_text(
-            text,
-            reply_markup=get_user_keyboard()
-        )
+        return
+
+    # Check Channel Subscription
+    subscribed = await is_user_subscribed(context, user_id)
+    if not subscribed:
+        msg = MESSAGES[lang]['must_join'].format(channel=OFFICIAL_CHANNEL)
+        await update.message.reply_text(msg)
+        return
+
+    text = MESSAGES[lang]['welcome']
+    await update.message.reply_text(
+        text,
+        reply_markup=get_user_keyboard()
+    )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -170,6 +194,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(user_id)
     lang = user[2] if user[2] in MESSAGES else 'en'
     
+    # Non-admin channel check
+    if user_id != ADMIN_ID:
+        subscribed = await is_user_subscribed(context, user_id)
+        if not subscribed:
+            msg = MESSAGES[lang]['must_join'].format(channel=OFFICIAL_CHANNEL)
+            await update.message.reply_text(msg)
+            return
+
     # ❌ Cancel Pressed at Main Level
     if text == "❌ Cancel":
         if user_id == ADMIN_ID:
