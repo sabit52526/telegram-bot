@@ -1,44 +1,26 @@
-import os
 import logging
 import sqlite3
-from flask import Flask
-from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
-# --- FLASK KEEP ALIVE SERVER (Render-এ ২৪/৭ চালু রাখার জন্য) ---
-app_flask = Flask('')
-
-@app_flask.route('/')
-def home():
-    return "Bot is alive and running 24/7!"
-
-def run():
-    app_flask.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.daemon = True
-    t.start()
-
-# --- কনফিগারেশন ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")      # এখানে আপনার বটের মূল টোকেন বসান
-ADMIN_ID = 8808647263                           # আপনার টেলিগ্রাম নিউমেরিক আইডি
-OFFICIAL_CHANNEL = "@ClickEarnProOfficial"      # আপনার অফিশিয়াল চ্যানেলের ইউজারনেম
-SUPPORT_PHONE = "01720616501"                   # অ্যাডমিন সাপোর্ট নম্বর
+# --- CONFIGURATION ---
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"      # আপনার বটের টোকেন দিন
+ADMIN_ID = 8808647263                            # আপনার নিজের টেলিগ্রাম ইউজারের numeric ID দিন
+OFFICIAL_CHANNEL = "@ClickEarnProOfficial"       # আপনার বটের অফিশিয়াল মাস্ট-জয়েন চ্যানেল আইডি
+SUPPORT_PHONE = "01720616501"                   # এডমিন সাপোর্ট নম্বর
 DOLLAR_RATE = 120.0                             # ১ ডলার = ১২০ টাকা
-WITHDRAW_FEE = 0.02                             # উইথড্র ফি $০.০২
-REFERRAL_REWARD_ON_WITHDRAW = 0.01              # রেফারাল বোনাস $০.০১
+WITHDRAW_FEE = 0.02                             # ফিক্সড উইথড্র ফি $0.02
+REFERRAL_REWARD_ON_WITHDRAW = 0.01              # উইথড্রকালে রেফারার বোনাস $0.01
 
-# --- ভাষা ডিকশনারি ---
+# --- MULTI-LANGUAGE DICTIONARY ---
 LANG_TEXTS = {
     'bn': {
-        'welcome': "👋 স্বাগতম! আমাদের বট ব্যবহার করতে অবশ্যই আগে অফিশিয়াল চ্যানেলে জয়েন করুন:",
+        'welcome': "👋 স্বাগতম! আমাদের বট ব্যবহার করতে অবশ্যই আগে অফিশিয়াল চ্যানেলে জয়েন করুন:",
         'tasks': "📋 টাস্ক সমূহ", 'balance': "💰 মাই ব্যালেন্স", 'withdraw': "💳 উইথড্র",
         'referral': "👥 রেফার", 'lang': "🌐 ভাষা (Language)", 'support': "📞 সাপোর্ট",
-        'cancel': "❌ Cancel", 'cancelled': "👌 অ্যাকশন বাতিল করা হয়েছে।",
-        'must_join': "⚠️ আগে আমাদের অফিশিয়াল চ্যানেলে জয়েন করে 'Check' বাটনে চাপ দিন!",
-        'blocked': "⛔ আপনার একাউন্টটি সাময়িকভাবে স্থগিত করা হয়েছে। শুধুমাত্র সাপোর্টে যোগাযোগ করতে পারবেন।"
+        'cancel': "❌ Cancel", 'cancelled': "👌 অ্যাকশন বাতিল করা হয়েছে।",
+        'must_join': "⚠️ আগে আমাদের অফিশিয়াল চ্যানেলে জয়েন করে 'Check' বাটনে চাপ দিন!",
+        'blocked': "⛔ আপনার একাউন্টটি সাময়িকভাবে স্থগিত করা হয়েছে। শুধুমাত্র সাপোর্টে যোগাযোগ করতে পারবেন।"
     },
     'en': {
         'welcome': "👋 Welcome! You must join our Official Channel to use the bot:",
@@ -54,7 +36,7 @@ LANG_TEXTS = {
     'ur': {'welcome': "👋 خوش آمدید! بوٹ استعمال کرنے کے لیے آفیشل چینل جوائن کریں:", 'tasks': "📋 ٹاسکس", 'balance': "💰 بیلنس", 'withdraw': "💳 نکالیں", 'referral': "👥 ریفرل", 'lang': "🌐 زبان", 'support': "📞 سپورٹ", 'cancel': "❌ Cancel", 'cancelled': "👌 منسوخ کر دیا گیا۔", 'must_join': "⚠️ پہلے آفیشل چینل جوائن کریں!", 'blocked': "⛔ آپ کا اکاؤنٹ معطل کر دیا گیا ہے۔"}
 }
 
-# --- ডাটাবেজ সেটআপ ---
+# --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("earning_bot.db")
     cursor = conn.cursor()
@@ -79,7 +61,7 @@ def init_db():
 
 init_db()
 
-# --- ডাটাবেজ সাহায্যকারী ফাংশন ---
+# --- DATABASE HELPER FUNCTIONS ---
 def get_user(user_id):
     conn = sqlite3.connect("earning_bot.db")
     cursor = conn.cursor()
@@ -95,7 +77,7 @@ def update_balance(user_id, amount):
     conn.commit()
     conn.close()
 
-# --- চ্যানেল জয়েন ভেরিফিকেশন ---
+# --- CHECK MUST JOIN CHANNEL ---
 async def check_channel_member(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     try:
         member = await context.bot.get_chat_member(chat_id=OFFICIAL_CHANNEL, user_id=user_id)
@@ -103,7 +85,7 @@ async def check_channel_member(context: ContextTypes.DEFAULT_TYPE, user_id: int)
     except Exception:
         return True
 
-# --- মেইন মেনু বিল্ডার ---
+# --- MAIN MENU BUILDER ---
 def get_main_menu(lang='bn'):
     t = LANG_TEXTS.get(lang, LANG_TEXTS['bn'])
     keyboard = [
@@ -114,7 +96,7 @@ def get_main_menu(lang='bn'):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# --- স্টার্ট কমান্ড ---
+# --- START COMMAND ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -130,11 +112,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     u_data = get_user(user_id)
-    if u_data and u_data[2] == 1:
+    if u_data and u_data[2] == 1: # SILENT BLOCK CHECK
         keyboard = [[InlineKeyboardButton("📞 Support", url=f"https://t.me/+88{SUPPORT_PHONE}")]]
         await update.message.reply_text("⛔ Your account is suspended.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
+    # Check mandatory official channel
     is_joined = await check_channel_member(context, user_id)
     if not is_joined:
         keyboard = [
@@ -147,14 +130,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = u_data[1] if u_data else 'bn'
     await update.message.reply_text(LANG_TEXTS[lang]['welcome'], reply_markup=get_main_menu(lang))
 
-# --- কলব্যাক হ্যান্ডলার ---
+# --- CALLBACK HANDLER ---
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
     u_data = get_user(user_id)
-    if u_data and u_data[2] == 1:
+    if u_data and u_data[2] == 1: # SILENT BLOCK (Ignores all clicks)
         return
 
     lang = u_data[1] if u_data else 'bn'
@@ -171,27 +154,8 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(t['must_join'], show_alert=True)
         return
 
-    elif query.data == "my_balance":
-        balance = u_data[0] if u_data else 0.0
-        msg = f"💰 **{t['balance']}**\n\n💵 USD: `${balance:.4f}`\n🇧🇩 BDT: `{balance * DOLLAR_RATE:.2f} BDT`"
-        keyboard = [[InlineKeyboardButton(t['cancel'], callback_data="universal_cancel")]]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data == "referral":
-        bot_username = (await context.bot.get_me()).username
-        ref_link = f"https://t.me/{bot_username}?start={user_id}"
-        
-        conn = sqlite3.connect("earning_bot.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,))
-        ref_count = cursor.fetchone()[0]
-        conn.close()
-
-        msg = f"👥 **{t['referral']}**\n\n🔗 Ref Link:\n`{ref_link}`\n\n📊 Total Referred: `{ref_count}` Users\n🎁 Reward: ${REFERRAL_REWARD_ON_WITHDRAW:.2f} per active referral withdraw."
-        keyboard = [[InlineKeyboardButton(t['cancel'], callback_data="universal_cancel")]]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data == "view_tasks":
+    # VIEW TASKS (Taskly UI Style with Cancel)
+    if query.data == "view_tasks":
         conn = sqlite3.connect("earning_bot.db")
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks WHERE task_id NOT IN (SELECT task_id FROM completed_tasks WHERE user_id = ?)", (user_id,))
@@ -220,6 +184,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if task:
             _, title, link, reward, ch_id = task
+            # AUTO STRICT VERIFY LOGIC
             is_valid = True
             if ch_id and ch_id != "none":
                 try:
@@ -246,9 +211,11 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 update_balance(user_id, reward)
                 await query.edit_message_text(f"🎉 Task Completed! Added ${reward:.4f} to your balance.", reply_markup=get_main_menu(lang))
 
+    # WITHDRAW WITH STRICT ZERO-LOSS RE-VERIFICATION
     elif query.data == "withdraw_menu":
         balance = u_data[0] if u_data else 0.0
         
+        # Zero-loss check: Verify if user left previously completed channels
         conn = sqlite3.connect("earning_bot.db")
         cursor = conn.cursor()
         cursor.execute("SELECT task_id, channel_id, reward FROM tasks WHERE task_id IN (SELECT task_id FROM completed_tasks WHERE user_id = ?)", (user_id,))
@@ -269,7 +236,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if cheated_penalty > 0:
             update_balance(user_id, -cheated_penalty)
-            await query.answer(f"⚠️ Penalty! You left channels. Deducted ${cheated_penalty:.4f}", show_alert=True)
+            await query.answer(f"⚠️ Penalty! You left channels. Deducted ${cheated_penalty:.2f}", show_alert=True)
             return
 
         keyboard = [
@@ -277,29 +244,26 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📱 bKash (Min $1.00)", callback_data="withdraw_bikash")],
             [InlineKeyboardButton(t['cancel'], callback_data="universal_cancel")]
         ]
-        await query.edit_message_text(f"💳 Balance: ${balance:.4f}\nWithdraw Fee:${WITHDRAW_FEE:.2f}", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(f"💳 Balance: ${balance:.2f}\nWithdraw Fee: $0.02", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data in ["withdraw_binance", "withdraw_bikash"]:
         is_bin = query.data == "withdraw_binance"
         min_lim = 0.20 if is_bin else 1.00
-        balance = get_user(user_id)[0]
+        balance = u_data[0]
         
         if balance < min_lim:
             await query.answer(f"❌ Minimum withdraw is ${min_lim:.2f}", show_alert=True)
             return
 
         net = balance - WITHDRAW_FEE
-        if net < 0:
-            await query.answer("❌ Balance too low to cover fee!", show_alert=True)
-            return
-
-        if u_data[3]:
+        if u_data[3]: # Referral reward trigger
             update_balance(u_data[3], REFERRAL_REWARD_ON_WITHDRAW)
 
         update_balance(user_id, -balance)
-        msg = f"✅ Withdraw Submitted!\nMethod: {'Binance' if is_bin else 'bKash'}\nTotal: ${balance:.4f}\nFee: ${WITHDRAW_FEE:.2f}\nYou get: " + (f"${net:.4f}" if is_bin else f"{net*DOLLAR_RATE:.2f} BDT")
+        msg = f"✅ Withdraw Submitted!\nMethod: {'Binance' if is_bin else 'bKash'}\nTotal: ${balance:.2f}\nFee: $0.02\nYou get: " + (f"${net:.2f}" if is_bin else f"{net*DOLLAR_RATE:.2f} BDT")
         await query.edit_message_text(msg, reply_markup=get_main_menu(lang))
 
+    # LANGUAGE SELECTION MENU
     elif query.data == "change_lang":
         keyboard = [
             [InlineKeyboardButton("🇧🇩 বাংলা", callback_data="setlang_bn"), InlineKeyboardButton("🇬🇧 English", callback_data="setlang_en")],
@@ -318,7 +282,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         await query.edit_message_text("✅ Language Updated!", reply_markup=get_main_menu(new_l))
 
-# --- অ্যাডমিন কমান্ড ---
+# --- ADMIN COMMANDS & SUSPICIOUS DETECTOR ---
 async def admin_addtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
@@ -335,29 +299,23 @@ async def admin_addtask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    try:
-        target_id = int(context.args[0])
-        conn = sqlite3.connect("earning_bot.db")
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET is_blocked = 1 WHERE user_id = ?", (target_id,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"⛔ User {target_id} has been silently blocked!")
-    except Exception:
-        await update.message.reply_text("Use: `/block USER_ID`", parse_mode="Markdown")
+    target_id = int(context.args[0])
+    conn = sqlite3.connect("earning_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_blocked = 1 WHERE user_id = ?", (target_id,))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"⛔ User {target_id} has been silently blocked!")
 
 async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    try:
-        target_id = int(context.args[0])
-        conn = sqlite3.connect("earning_bot.db")
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET is_blocked = 0 WHERE user_id = ?", (target_id,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"✅ User {target_id} unblocked!")
-    except Exception:
-        await update.message.reply_text("Use: `/unblock USER_ID`", parse_mode="Markdown")
+    target_id = int(context.args[0])
+    conn = sqlite3.connect("earning_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_blocked = 0 WHERE user_id = ?", (target_id,))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"✅ User {target_id} unblocked!")
 
 async def admin_suspicious(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -369,12 +327,11 @@ async def admin_suspicious(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "⚠️ **Suspicious Accounts (No Username):**\n\n"
     for uid, uname in sus_users:
-        msg += f"🆔 `{uid}` | 🔴 Risk: High\n/block {uid}\n\n"
+        msg += f"🆔 `{uid}` | 🔴 Risk: High (No Username)\n/block {uid}\n\n"
     await update.message.reply_text(msg if sus_users else "✅ No suspicious users detected.", parse_mode="Markdown")
 
-# --- মেইন রানার ---
+# --- MAIN RUNNER ---
 def main():
-    keep_alive()  # Render-এ ২৪/৭ চালু রাখার জন্য ব্যাকগ্রাউন্ড ব্যাকএন্ড
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addtask", admin_addtask))
