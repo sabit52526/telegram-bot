@@ -1,379 +1,228 @@
 import os
 import sqlite3
 import logging
-from flask import Flask
 from threading import Thread
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from flask import Flask
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-    ConversationHandler
+    Application, CommandHandler, MessageHandler, filters, 
+    ContextTypes, ConversationHandler
 )
 
-# ---------------------------------------------------------
-# 1. CONFIGURATION & CONSTANTS
-# ---------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
-ADMIN_ID = 8808647263  # Fixed Hardcoded Admin ID
-OFFICIAL_CHANNEL = "@YourChannelUsername"  # ⚠️ এখানে আপনার চ্যানেলের Username দিন (যেমন: @clickearn_updates)
+# Logging Setup
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Multi-language text templates
-MESSAGES = {
-    'en': {
-        'welcome': "👋 Welcome to ClickEarn Pro!\nComplete simple tasks and earn money daily.",
-        'must_join': "⚠️ You MUST join our Official Channel to use this bot!\n\n👉 Join Here: {channel}\n\nAfter joining, send /start again.",
-        'balance': "💰 Your Current Balance: ${balance:.4f}",
-        'referral': "👥 Your Referral Link:\nhttps://t.me/{bot_username}?start={user_id}\n\nEarn bonus for each active referral!",
-        'profile': "👤 Profile Info:\nID: {user_id}\nLanguage: {lang}\nBalance: ${balance:.4f}",
-        'support': "📞 For support and assistance, please contact our official team: @YourSupportUsername",
-        'cancelled': "❌ Action cancelled. Returning to main menu.",
-        'enter_bonus_id': "🎁 Enter the User ID to give bonus:",
-        'enter_bonus_amount': "💵 Enter the bonus amount ($):",
-        'bonus_success': "✅ Successfully sent ${amount} bonus to User ID {target_id}!",
-        'select_lang': "🌐 Select your preferred language:"
-    },
-    'bn': {
-        'welcome': "👋 ClickEarn Pro-এ আপনাকে স্বাগতম!\nসহজ কাজ সম্পন্ন করে প্রতিদিন ইনকাম করুন।",
-        'must_join': "⚠️ বটটি ব্যবহার করতে অবশ্যই আমাদের অফিশিয়াল চ্যানেলে জয়েন থাকতে হবে!\n\n👉 চ্যানেল লিংক: {channel}\n\nজয়েন করার পর আবার /start চাপুন।",
-        'balance': "💰 আপনার বর্তমান ব্যালেন্স: ${balance:.4f}",
-        'referral': "👥 আপনার রেফারেল লিঙ্ক:\nhttps://t.me/{bot_username}?start={user_id}\n\nপ্রতিটি অ্যাক্টিভ রেফারেলে বোনাস পান!",
-        'profile': "👤 প্রোফাইল তথ্য:\nআইডি: {user_id}\nভাষা: {lang}\nব্যালেন্স: ${balance:.4f}",
-        'support': "📞 যেকোনো সমস্যায় সাহায্য ও সাপোর্টের জন্য আমাদের অফিশিয়াল টিমে যোগাযোগ করুন: @YourSupportUsername",
-        'cancelled': "❌ কাজ বাতিল করা হয়েছে। মূল মেনুতে ফিরে যাওয়া হচ্ছে।",
-        'enter_bonus_id': "🎁 যাকে বোনাস দিতে চান তার User ID লিখুন:",
-        'enter_bonus_amount': "💵 বোনাসের পরিমাণ লিখুন ($):",
-        'bonus_success': "✅ সফলভাবে User ID {target_id}-কে ${amount} বোনাস দেওয়া হয়েছে!",
-        'select_lang': "🌐 আপনার পছন্দের ভাষা নির্বাচন করুন:"
-    }
-}
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [123456789]  # আপনার Telegram User ID এখানে দিন (ইচ্ছা হলে)
 
-# ---------------------------------------------------------
-# 2. FLASK DUMMY SERVER (FOR 24/7 UPTIME ON RENDER)
-# ---------------------------------------------------------
+# Flask Server for Render Keep-Alive
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "ClickEarn Pro Bot is Running 24/7!"
+    return "Bot is running!"
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=10000)
 
-# ---------------------------------------------------------
-# 3. DATABASE SETUP (SQLITE)
-# ---------------------------------------------------------
+# Database Setup
 def init_db():
-    conn = sqlite3.connect("clickearn.db")
+    conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            balance REAL DEFAULT 0.0,
-            language TEXT DEFAULT 'en',
-            is_blocked INTEGER DEFAULT 0
-        )
-    """)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY,
+                        username TEXT,
+                        first_name TEXT,
+                        balance REAL DEFAULT 0.0,
+                        is_suspicious INTEGER DEFAULT 0,
+                        is_blocked INTEGER DEFAULT 0
+                    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT,
+                        reward REAL,
+                        link TEXT
+                    )''')
     conn.commit()
     conn.close()
 
-def get_user(user_id):
-    conn = sqlite3.connect("clickearn.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, balance, language, is_blocked FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-    if not user:
-        cursor.execute("INSERT INTO users (user_id, balance, language) VALUES (?, 0.0, 'en')", (user_id,))
-        conn.commit()
-        user = (user_id, 0.0, 'en', 0)
-    conn.close()
-    return user
+# States for Conversation
+BONUS_ID, BONUS_AMOUNT = range(2)
+TASK_TITLE, TASK_REWARD, TASK_LINK = range(2, 5)
 
-def update_user_lang(user_id, lang):
-    conn = sqlite3.connect("clickearn.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
-    conn.commit()
-    conn.close()
-
-def add_user_balance(user_id, amount):
-    conn = sqlite3.connect("clickearn.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-    conn.close()
-
-# Helper function to check channel membership
-async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    if OFFICIAL_CHANNEL == "@YourChannelUsername":
-        return True  # Skip check if channel username isn't configured yet
-    try:
-        member = await context.bot.get_chat_member(chat_id=OFFICIAL_CHANNEL, user_id=user_id)
-        if member.status in ['creator', 'administrator', 'member']:
-            return True
-        return False
-    except Exception as e:
-        logging.error(f"Channel Check Error: {e}")
-        return True
-
-# ---------------------------------------------------------
-# 4. KEYBOARD MENUS SETUP
-# ---------------------------------------------------------
-def get_user_keyboard():
-    keyboard = [
-        ["💰 Balance", "📋 Tasks"],
-        ["📤 Withdraw", "👤 Profile"],
-        ["👥 My Referrals", "🌐 Language"],
-        ["📞 Support"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
+# --- Admin Keyboards ---
 def get_admin_keyboard():
     keyboard = [
-        ["➕ Add Task", "📊 View Users"],
-        ["🎁 Give Bonus", "⚠️ Suspicious Users"],
-        ["🚫 Block User", "🟢 Unblock User"]
+        [KeyboardButton("➕ Add Task"), KeyboardButton("📊 View Users")],
+        [KeyboardButton("🎁 Give Bonus"), KeyboardButton("⚠️ Suspicious Users")],
+        [KeyboardButton("🚫 Block User"), KeyboardButton("✅ Unblock User")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def get_cancel_keyboard():
-    return ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
-
-def get_withdraw_keyboard():
-    keyboard = [
-        ["bKash ($1.00)", "Binance ($0.20)"],
-        ["USDT (BEP-20)"],
-        ["❌ Cancel"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def get_language_keyboard():
-    keyboard = [
-        ["English 🇬🇧", "বাংলা 🇧🇩"],
-        ["❌ Cancel"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-# ---------------------------------------------------------
-# 5. BOT HANDLERS & LOGIC
-# ---------------------------------------------------------
-BONUS_ID, BONUS_AMOUNT = range(2)
-
+# --- Start Command ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    lang = user[2] if user[2] in MESSAGES else 'en'
+    user = update.effective_user
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+                   (user.id, user.username, user.first_name))
+    conn.commit()
+    conn.close()
     
-    if user_id == ADMIN_ID:
-        await update.message.reply_text(
-            "⚙️ **Welcome to ClickEarn Pro Admin Panel**",
-            reply_markup=get_admin_keyboard(),
-            parse_mode="Markdown"
-        )
-        return
-
-    # Check Channel Subscription
-    subscribed = await is_user_subscribed(context, user_id)
-    if not subscribed:
-        msg = MESSAGES[lang]['must_join'].format(channel=OFFICIAL_CHANNEL)
-        await update.message.reply_text(msg)
-        return
-
-    text = MESSAGES[lang]['welcome']
     await update.message.reply_text(
-        text,
-        reply_markup=get_user_keyboard()
+        f"👋 Hello {user.first_name}!\nWelcome to ClickEarn Pro.",
+        reply_markup=get_admin_keyboard()
     )
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    lang = user[2] if user[2] in MESSAGES else 'en'
-    
-    # Non-admin channel check
-    if user_id != ADMIN_ID:
-        subscribed = await is_user_subscribed(context, user_id)
-        if not subscribed:
-            msg = MESSAGES[lang]['must_join'].format(channel=OFFICIAL_CHANNEL)
-            await update.message.reply_text(msg)
-            return
+# --- View Users Function ---
+async def view_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, first_name, username, balance FROM users")
+    users = cursor.fetchall()
+    conn.close()
 
-    # ❌ Cancel Pressed at Main Level
-    if text == "❌ Cancel":
-        if user_id == ADMIN_ID:
-            await update.message.reply_text("Main Admin Menu:", reply_markup=get_admin_keyboard())
-        else:
-            await update.message.reply_text("Main Menu:", reply_markup=get_user_keyboard())
+    if not users:
+        await update.message.reply_text("❌ No registered users found.")
         return
 
-    # User Navigation
-    if text == "💰 Balance":
-        balance_msg = MESSAGES[lang]['balance'].format(balance=user[1])
-        await update.message.reply_text(balance_msg, reply_markup=get_user_keyboard())
-        
-    elif text == "📋 Tasks":
-        await update.message.reply_text("📋 Available Tasks:\n\n1. Join Telegram Channel - $0.05\n2. Visit Website - $0.02", reply_markup=get_cancel_keyboard())
-        
-    elif text == "📤 Withdraw":
-        await update.message.reply_text("💳 Select payment method:", reply_markup=get_withdraw_keyboard())
-        
-    elif text == "👤 Profile":
-        profile_msg = MESSAGES[lang]['profile'].format(user_id=user_id, lang=lang.upper(), balance=user[1])
-        await update.message.reply_text(profile_msg, reply_markup=get_user_keyboard())
-        
-    elif text == "👥 My Referrals":
-        bot_username = (await context.bot.get_me()).username
-        ref_msg = MESSAGES[lang]['referral'].format(bot_username=bot_username, user_id=user_id)
-        await update.message.reply_text(ref_msg, reply_markup=get_user_keyboard())
-        
-    elif text == "🌐 Language":
-        lang_msg = MESSAGES[lang]['select_lang']
-        await update.message.reply_text(lang_msg, reply_markup=get_language_keyboard())
+    msg = f"📊 **Registered Users ({len(users)}):**\n\n"
+    for u_id, fname, uname, bal in users:
+        username_str = f"@{uname}" if uname else "No Username"
+        msg += f"👤 **Name:** {fname}\n🆔 **ID:** `{u_id}`\n🔗 **User:** {username_str}\n💰 **Balance:** ${bal:.2f}\n--------------------\n"
 
-    elif text == "📞 Support":
-        support_msg = MESSAGES[lang]['support']
-        await update.message.reply_text(support_msg, reply_markup=get_user_keyboard())
-        
-    elif text == "English 🇬🇧":
-        update_user_lang(user_id, 'en')
-        await update.message.reply_text("Language changed to English!", reply_markup=get_user_keyboard())
-        
-    elif text == "বাংলা 🇧🇩":
-        update_user_lang(user_id, 'bn')
-        await update.message.reply_text("ভাষা বাংলায় পরিবর্তন করা হয়েছে!", reply_markup=get_user_keyboard())
-        
-    # Admin Handlers
-    elif user_id == ADMIN_ID:
-        if text == "📊 View Users":
-            conn = sqlite3.connect("clickearn.db")
-            count = conn.cursor().execute("SELECT COUNT(*) FROM users").fetchone()[0]
-            conn.close()
-            await update.message.reply_text(f"📊 Total Registered Users: {count}", reply_markup=get_admin_keyboard())
-            
-        elif text == "➕ Add Task":
-            await update.message.reply_text("➕ Send task details format:\nTitle | URL | Reward", reply_markup=get_cancel_keyboard())
-            
-        elif text in ["⚠️ Suspicious Users", "🚫 Block User", "🟢 Unblock User"]:
-            await update.message.reply_text(f"⚙️ Selected: {text}", reply_markup=get_cancel_keyboard())
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
-# ---------------------------------------------------------
-# 6. CONVERSATION HANDLER FOR ADMIN "GIVE BONUS"
-# ---------------------------------------------------------
+# --- View Suspicious Users Function ---
+async def suspicious_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, first_name, username FROM users WHERE is_suspicious = 1")
+    users = cursor.fetchall()
+    conn.close()
+
+    if not users:
+        await update.message.reply_text("✅ No suspicious users detected at the moment.")
+        return
+
+    msg = "⚠️ **Suspicious Users List:**\n\n"
+    for u_id, fname, uname in users:
+        username_str = f"@{uname}" if uname else "N/A"
+        msg += f"👤 **Name:** {fname}\n🆔 **ID:** `{u_id}`\n🔗 {username_str}\n--------------------\n"
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# --- Add Task Handlers ---
+async def add_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📝 Enter the **Task Title** (e.g., Join Telegram Channel):")
+    return TASK_TITLE
+
+async def add_task_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['task_title'] = update.message.text
+    await update.message.reply_text("💰 Enter the **Reward Amount** in USD (e.g., 0.05):")
+    return TASK_REWARD
+
+async def add_task_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        reward = float(update.message.text)
+        context.user_data['task_reward'] = reward
+        await update.message.reply_text("🔗 Enter the **Task Link / URL**:")
+        return TASK_LINK
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount! Please enter a number (e.g., 0.05):")
+        return TASK_REWARD
+
+async def add_task_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    link = update.message.text
+    title = context.user_data['task_title']
+    reward = context.user_data['task_reward']
+
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO tasks (title, reward, link) VALUES (?, ?, ?)", (title, reward, link))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        f"✅ **Task Added Successfully!**\n\n📌 **Title:** {title}\n💰 **Reward:** ${reward}\n🔗 **Link:** {link}",
+        parse_mode="Markdown",
+        reply_markup=get_admin_keyboard()
+    )
+    return ConversationHandler.END
+
+# --- Give Bonus Handlers ---
 async def give_bonus_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return ConversationHandler.END
-    await update.message.reply_text("🎁 Enter the User ID to receive the bonus:", reply_markup=get_cancel_keyboard())
+    await update.message.reply_text("👤 Enter the **User ID** to receive the bonus:")
     return BONUS_ID
 
 async def bonus_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "❌ Cancel":
-        await update.message.reply_text("Action cancelled.", reply_markup=get_admin_keyboard())
-        return ConversationHandler.END
     try:
-        context.user_data['target_user_id'] = int(text)
-        await update.message.reply_text("💵 Enter bonus amount ($):", reply_markup=get_cancel_keyboard())
+        user_id = int(update.message.text)
+        context.user_data['bonus_user_id'] = user_id
+        await update.message.reply_text("💰 Enter the **Bonus Amount** ($):")
         return BONUS_AMOUNT
     except ValueError:
-        await update.message.reply_text("❌ Invalid User ID. Enter numbers only or press ❌ Cancel.")
+        await update.message.reply_text("❌ Invalid User ID! Please enter a valid numerical ID.")
         return BONUS_ID
 
 async def bonus_amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "❌ Cancel":
-        await update.message.reply_text("Action cancelled.", reply_markup=get_admin_keyboard())
-        return ConversationHandler.END
     try:
-        amount = float(text)
-        target_id = context.user_data['target_user_id']
-        add_user_balance(target_id, amount)
-        
-        # Notify target user
-        try:
-            await context.bot.send_message(
-                chat_id=target_id, 
-                text=f"🎁 **Bonus Received!**\nYou received ${amount:.4f} bonus from Admin!"
-            )
-        except Exception:
-            pass
-            
-        await update.message.reply_text(
-            f"✅ Successfully sent ${amount:.4f} bonus to User ID `{target_id}`!",
-            reply_markup=get_admin_keyboard(),
-            parse_mode="Markdown"
-        )
+        amount = float(update.message.text)
+        user_id = context.user_data['bonus_user_id']
+
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        conn.commit()
+        conn.close()
+
+        await update.message.reply_text(f"🎉 Successfully added **${amount:.2f}** bonus to User `{user_id}`!", parse_mode="Markdown", reply_markup=get_admin_keyboard())
         return ConversationHandler.END
     except ValueError:
-        await update.message.reply_text("❌ Invalid amount. Enter numbers only (e.g., 0.50) or press ❌ Cancel.")
+        await update.message.reply_text("❌ Invalid amount. Enter a valid number.")
         return BONUS_AMOUNT
 
-async def bonus_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Action cancelled.", reply_markup=get_admin_keyboard())
+async def cancel_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Action cancelled.", reply_markup=get_admin_keyboard())
     return ConversationHandler.END
 
-# ---------------------------------------------------------
-# 7. MAIN FUNCTION
-# ---------------------------------------------------------
+# --- Main Application ---
 def main():
     init_db()
     
-    # Run Flask in background thread
+    # Start Flask background thread
     Thread(target=run_flask, daemon=True).start()
     
-    # Initialize Telegram Application
     app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Bonus Conversation Handler
-    bonus_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^🎁 Give Bonus$"), give_bonus_start)],
-        states={
-            BONUS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_id_received)],
-            BONUS_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_amount_received)]
-        },
-        fallbacks=[MessageHandler(filters.Regex("^❌ Cancel$"), bonus_cancel)]
-    )
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(bonus_conv_handler)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    logging.basicConfig(level=logging.INFO)
-    print("Bot started with Persistent Reply Keyboard Menu...")
-    app.run_polling()
 
-if __name__ == "__main__":
-    main()
-def main():
-    init_db()
-    
-    # Run Flask in background thread for Render
-    Thread(target=run_flask, daemon=True).start()
-    
-    # Initialize Telegram Application
-    app = Application.builder().token(BOT_TOKEN).build()
-    
     # Bonus Conversation Handler
-    bonus_conv_handler = ConversationHandler(
+    bonus_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^🎁 Give Bonus$"), give_bonus_start)],
         states={
             BONUS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_id_received)],
             BONUS_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bonus_amount_received)]
         },
-        fallbacks=[MessageHandler(filters.Regex("^❌ Cancel$"), bonus_cancel)]
+        fallbacks=[MessageHandler(filters.Regex("^❌ Cancel$"), cancel_action)]
     )
-    
+
+    # Add Task Conversation Handler
+    task_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^➕ Add Task$"), add_task_start)],
+        states={
+            TASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_title)],
+            TASK_REWARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_reward)],
+            TASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_link)]
+        },
+        fallbacks=[MessageHandler(filters.Regex("^❌ Cancel$"), cancel_action)]
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(bonus_conv_handler)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    logging.basicConfig(level=logging.INFO)
-    print("Bot started successfully...")
-    
-    # Run polling cleanly without conflicts
+    app.add_handler(bonus_handler)
+    app.add_handler(task_handler)
+    app.add_handler(MessageHandler(filters.Regex("^📊 View Users$"), view_users))
+    app.add_handler(MessageHandler(filters.Regex("^⚠️ Suspicious Users$"), suspicious_users))
+
+    print("Bot is running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
