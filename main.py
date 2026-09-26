@@ -1,887 +1,418 @@
-Telegram Earning Bot
-=====================
-Stack: python-telegram-bot==20.7, Flask==3.0.0, gunicorn, sqlite3
-Designed to run 24/7 on Render's free web-service tier via a small
-Flask keep-alive server running alongside the bot's polling loop.
-
-Run locally:      python bot.py
-Deploy on Render: see README.md (uses `python bot.py` as the start
-                   command; gunicorn is only needed if you switch the
-                   Flask app to be the primary served app / add webhooks).
-"""
-
-import os
-import logging
+import time
 import sqlite3
 import threading
-from datetime import datetime
-from contextlib import contextmanager
+import telebot
+from telebot import types
 
-from flask import Flask
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.constants import ParseMode
-from telegram.ext import (
-    Application,
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters,
-)
+# ==================== CONFIGURATION ====================
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Ekhane apnar bot token boshaben
+ADMIN_ID = 8808647263               # Apnar Admin ID
+SUPPORT_NUMBER = "01720616501"
 
-# --------------------------------------------------------------------------- #
-# Config
-# --------------------------------------------------------------------------- #
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 8808647263
-SUPPORT_USERNAME = "+880 17 206 16501"
-REFERRAL_BONUS = 0.002
-DB_PATH = os.getenv("DB_PATH", "bot_database.db")
-KEEP_ALIVE_PORT = int(os.getenv("PORT", "10000"))
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger("earning_bot")
-
-# --------------------------------------------------------------------------- #
-# Database
-# --------------------------------------------------------------------------- #
-
-
-@contextmanager
-def db_conn():
-    conn = sqlite3.connect(DB_PATH)
+# ==================== DATABASE SETUP ====================
+def get_db():
+    conn = sqlite3.connect("bot_database.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
+    return conn
 
 def init_db():
-    with db_conn() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                balance REAL NOT NULL DEFAULT 0,
-                referred_by INTEGER,
-                referral_count INTEGER NOT NULL DEFAULT 0,
-                is_blocked INTEGER NOT NULL DEFAULT 0,
-                joined_at TEXT NOT NULL
-            )
-            """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Users table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL DEFAULT 0.0,
+            language TEXT DEFAULT 'bn',
+            is_blocked INTEGER DEFAULT 0,
+            is_suspicious INTEGER DEFAULT 0
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                task_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                reward REAL NOT NULL,
-                link TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
+    ''')
+    
+    # Tasks table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT,
+            channel_link TEXT,
+            reward REAL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS withdrawals (
-                withdrawal_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                amount REAL NOT NULL,
-                method_details TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-            """
+    ''')
+    
+    # User completed tasks table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            task_id INTEGER,
+            reward_given REAL,
+            joined_timestamp INTEGER
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ip_log (
-                user_id INTEGER PRIMARY KEY,
-                device_signature TEXT,
-                flagged INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
+    ''')
+    
+    conn.commit()
+    conn.close()
 
+init_db()
 
-def get_user(user_id: int):
-    with db_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        return dict(row) if row else None
+# ==================== HELPER FUNCTIONS ====================
+def is_blocked(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_blocked FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res and res['is_blocked'] == 1
 
+def register_user(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
 
-def create_user(user_id: int, username: str, first_name: str, referred_by: int = None):
-    with db_conn() as conn:
-        conn.execute(
-            """INSERT OR IGNORE INTO users
-               (user_id, username, first_name, balance, referred_by,
-                referral_count, is_blocked, joined_at)
-               VALUES (?, ?, ?, 0, ?, 0, 0, ?)""",
-            (user_id, username, first_name, referred_by, datetime.utcnow().isoformat()),
-        )
+def get_user(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    user = cursor.fetchone()
+    conn.close()
+    return user
 
-        # Reward the referrer, once, only on first creation of this user.
-        if referred_by and referred_by != user_id:
-            referrer = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ?", (referred_by,)
-            ).fetchone()
-            if referrer:
-                conn.execute(
-                    "UPDATE users SET balance = balance + ?, referral_count = referral_count + 1 "
-                    "WHERE user_id = ?",
-                    (REFERRAL_BONUS, referred_by),
-                )
-
-
-def update_balance(user_id: int, amount: float):
-    with db_conn() as conn:
-        conn.execute(
-            "UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id)
-        )
-
-
-def set_blocked(user_id: int, blocked: bool):
-    with db_conn() as conn:
-        conn.execute(
-            "UPDATE users SET is_blocked = ? WHERE user_id = ?", (1 if blocked else 0, user_id)
-        )
-
-
-def add_task(title: str, reward: float, link: str):
-    with db_conn() as conn:
-        conn.execute(
-            "INSERT INTO tasks (title, reward, link, created_at) VALUES (?, ?, ?, ?)",
-            (title, reward, link, datetime.utcnow().isoformat()),
-        )
-
-
-def list_tasks():
-    with db_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM tasks ORDER BY task_id DESC").fetchall()]
-
-
-def list_users():
-    with db_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY balance DESC").fetchall()]
-
-
-def list_suspicious_users():
-    """
-    Heuristic only: flags users that share the same first_name+username
-    combo as another account, or that were referred by an account which
-    itself has an unusually high referral count. This is NOT proof of
-    fraud -- an admin should manually review before blocking anyone.
-    """
-    with db_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT u1.* FROM users u1
-            WHERE u1.referred_by IN (
-                SELECT referred_by FROM users
-                WHERE referred_by IS NOT NULL
-                GROUP BY referred_by
-                HAVING COUNT(*) >= 5
-            )
-            OR u1.referral_count >= 10
-            ORDER BY u1.referral_count DESC
-            """
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def create_withdrawal(user_id: int, amount: float, details: str):
-    with db_conn() as conn:
-        conn.execute(
-            "INSERT INTO withdrawals (user_id, amount, method_details, status, created_at) "
-            "VALUES (?, ?, ?, 'pending', ?)",
-            (user_id, amount, details, datetime.utcnow().isoformat()),
-        )
-        conn.execute(
-            "UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id)
-        )
-
-
-# --------------------------------------------------------------------------- #
-# Keyboards
-# --------------------------------------------------------------------------- #
-
-def admin_menu_kb():
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("➕ Add Task", callback_data="admin_add_task")],
-            [InlineKeyboardButton("🎁 Give Bonus", callback_data="admin_give_bonus")],
-            [InlineKeyboardButton("📊 View Users", callback_data="admin_view_users")],
-            [InlineKeyboardButton("⚠️ Suspicious Users", callback_data="admin_suspicious")],
-            [
-                InlineKeyboardButton("🚫 Block User", callback_data="admin_block"),
-                InlineKeyboardButton("✅ Unblock User", callback_data="admin_unblock"),
-            ],
-        ]
-    )
-
-
-def user_menu_kb():
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("💰 Balance", callback_data="user_balance"),
-                InlineKeyboardButton("📋 Tasks", callback_data="user_tasks"),
-            ],
-            [
-                InlineKeyboardButton("👤 Profile", callback_data="user_profile"),
-                InlineKeyboardButton("👥 Referrals", callback_data="user_referrals"),
-            ],
-            [
-                InlineKeyboardButton("💳 Withdraw", callback_data="user_withdraw"),
-                InlineKeyboardButton("🛠 Support", callback_data="user_support"),
-            ],
-        ]
-    )
-
-
-def cancel_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="global_cancel")]])
-
-
-def back_to_menu_kb(is_admin_user: bool):
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="back_to_menu")]]
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Conversation states
-# --------------------------------------------------------------------------- #
-
-(
-    ADD_TASK_TITLE,
-    ADD_TASK_REWARD,
-    ADD_TASK_LINK,
-    GIVE_BONUS_ID,
-    GIVE_BONUS_AMOUNT,
-    BLOCK_ID,
-    UNBLOCK_ID,
-    WITHDRAW_AMOUNT,
-    WITHDRAW_DETAILS,
-) = range(9)
-
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
-
-
-async def send_admin_dashboard(update_or_query, edit: bool = False):
-    text = "🛠 <b>Admin Dashboard</b>\n\nManage tasks, users, and bonuses below."
-    if edit:
-        await update_or_query.edit_message_text(text, reply_markup=admin_menu_kb(), parse_mode=ParseMode.HTML)
+# ==================== KEYBOARDS ====================
+def user_menu(lang='bn'):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    if lang == 'bn':
+        markup.add("💼 Task", "💰 Balance")
+        markup.add("👤 Profile", "🌐 Language")
+        markup.add("💸 Withdraw", "📞 Support")
     else:
-        await update_or_query.message.reply_text(text, reply_markup=admin_menu_kb(), parse_mode=ParseMode.HTML)
+        markup.add("💼 Task", "💰 Balance")
+        markup.add("👤 Profile", "🌐 Language")
+        markup.add("💸 Withdraw", "📞 Support")
+    return markup
 
+def admin_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("➕ Add Task", "📊 View Users")
+    markup.add("🎁 Give Bonus", "⚠️ Suspicious Users")
+    markup.add("🚫 Block User", "✅ Unblock User")
+    return markup
 
-async def send_user_dashboard(update_or_query, edit: bool = False):
-    text = "🏠 <b>Main Menu</b>\n\nChoose an option below to get started."
-    if edit:
-        await update_or_query.edit_message_text(text, reply_markup=user_menu_kb(), parse_mode=ParseMode.HTML)
-    else:
-        await update_or_query.message.reply_text(text, reply_markup=user_menu_kb(), parse_mode=ParseMode.HTML)
-
-
-# --------------------------------------------------------------------------- #
-# /start and generic entry points
-# --------------------------------------------------------------------------- #
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()  # wipe any stale conversation state
-    user = update.effective_user
-    referred_by = None
-    if context.args:
-        try:
-            candidate = int(context.args[0])
-            if candidate != user.id:
-                referred_by = candidate
-        except (ValueError, IndexError):
-            pass
-
-    existing = get_user(user.id)
-    if existing is None:
-        create_user(user.id, user.username or "", user.first_name or "", referred_by)
-        existing = get_user(user.id)
-
-    if existing["is_blocked"]:
-        await update.message.reply_text(
-            "🚫 আপনার অ্যাকাউন্টটি ব্লক করা হয়েছে। সহায়তার জন্য "
-            f"{SUPPORT_USERNAME} এ যোগাযোগ করুন।"
-        )
+# ==================== USER HANDLERS ====================
+@bot.message_handler(commands=['start', 'admin'])
+def start_cmd(message):
+    user_id = message.from_user.id
+    register_user(user_id)
+    
+    if is_blocked(user_id):
         return
 
-    if is_admin(user.id):
-        await send_admin_dashboard(update)
-    else:
-        await send_user_dashboard(update)
+    if message.text == '/admin' and user_id == ADMIN_ID:
+        bot.send_message(user_id, "<b>👨‍✈️ Admin Panel Activated:</b>", reply_markup=admin_menu())
+        return
 
+    user = get_user(user_id)
+    welcome_msg = (
+        "<b>Shagotom amader earning bot e!</b>\n\n"
+        "Nicher menu theke apnar kankhito option select korun."
+        if user['language'] == 'bn' else
+        "<b>Welcome to our Earning Bot!</b>\n\n"
+        "Select an option from the menu below."
+    )
+    bot.send_message(user_id, welcome_msg, reply_markup=user_menu(user['language']))
 
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("চলমান প্রক্রিয়াটি বাতিল করা হয়েছে।")
-    if is_admin(update.effective_user.id):
-        await send_admin_dashboard(update)
-    else:
-        await send_user_dashboard(update)
-    return ConversationHandler.END
+@bot.message_handler(func=lambda msg: True)
+def handle_all_messages(message):
+    user_id = message.from_user.id
+    if is_blocked(user_id):
+        return
 
+    register_user(user_id)
+    text = message.text
+    user = get_user(user_id)
+    lang = user['language']
 
-async def global_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fallback used inside conversations when the user taps '❌ Cancel'."""
-    query = update.callback_query
-    await query.answer()
-    context.user_data.clear()
-    if is_admin(update.effective_user.id):
-        await send_admin_dashboard(query, edit=True)
-    else:
-        await send_user_dashboard(query, edit=True)
-    return ConversationHandler.END
+    # --- USER PANEL BUTTONS ---
+    if text == "👤 Profile":
+        msg = (
+            f"<b>👤 Apnar Profile:</b>\n\n"
+            f"<b>🆔 User UID:</b> <code>{user_id}</code>\n"
+            f"<b>💵 Balance:</b> ${user['balance']:.2f}\n"
+            f"<b>🌐 Language:</b> {'Bangla' if lang == 'bn' else 'English'}"
+        )
+        bot.send_message(user_id, msg)
 
+    elif text == "💰 Balance":
+        bot.send_message(user_id, f"💰 <b>Bortoman Balance:</b> ${user['balance']:.2f}")
 
-async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if is_admin(update.effective_user.id):
-        await send_admin_dashboard(query, edit=True)
-    else:
-        await send_user_dashboard(query, edit=True)
+    elif text == "📞 Support":
+        msg = (
+            f"📞 <b>Support Center:</b>\n\n"
+            f"Jekono proyojone jogajog korun:\n"
+            f"Telegram: <code>{SUPPORT_NUMBER}</code>"
+        )
+        bot.send_message(user_id, msg)
 
+    elif text == "🌐 Language":
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("🇧🇩 Bangla", callback_data="lang_bn"),
+            types.InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")
+        )
+        bot.send_message(user_id, "Pochonder bhasha select korun / Select Language:", reply_markup=markup)
 
-async def auto_cancel_and_reroute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Registered as a fallback inside every conversation. If the user taps
-    ANY menu button while a conversation is active, this ends the current
-    conversation (no more waiting for the old input) and immediately hands
-    the tap to the normal menu dispatcher so the new action starts right
-    away instead of looping or getting stuck.
-    """
-    context.user_data.clear()
-    query = update.callback_query
-    if query:
-        data = query.data
-        if data in ROUTES:
-            await ROUTES[data](update, context)
+    elif text == "💸 Withdraw":
+        if user['balance'] < 0.20:
+            bot.send_message(user_id, "❌ <b>Nyunotomo withdraw $0.20।</b> Apnar porjapto balance nei.")
         else:
-            await query.answer()
-    return ConversationHandler.END
-
-
-# --------------------------------------------------------------------------- #
-# Admin: Add Task conversation
-# --------------------------------------------------------------------------- #
-
-
-async def admin_add_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return ConversationHandler.END
-    await query.edit_message_text(
-        "📝 নতুন টাস্কের <b>শিরোনাম (Title)</b> লিখুন:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=cancel_kb(),
-    )
-    return ADD_TASK_TITLE
-
-
-async def admin_add_task_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["task_title"] = update.message.text.strip()
-    await update.message.reply_text(
-        "💵 এই টাস্কের <b>রিওয়ার্ড ($)</b> লিখুন (যেমন: 0.25):",
-        parse_mode=ParseMode.HTML,
-        reply_markup=cancel_kb(),
-    )
-    return ADD_TASK_REWARD
-
-
-async def admin_add_task_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    try:
-        reward = float(text)
-        if reward <= 0:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text(
-            "⚠️ একটি বৈধ সংখ্যা লিখুন (যেমন: 0.25)।", reply_markup=cancel_kb()
-        )
-        return ADD_TASK_REWARD
-    context.user_data["task_reward"] = reward
-    await update.message.reply_text(
-        "🔗 টাস্কের <b>লিংক</b> দিন:", parse_mode=ParseMode.HTML, reply_markup=cancel_kb()
-    )
-    return ADD_TASK_LINK
-
-
-async def admin_add_task_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = update.message.text.strip()
-    title = context.user_data.get("task_title")
-    reward = context.user_data.get("task_reward")
-    add_task(title, reward, link)
-    context.user_data.clear()
-    await update.message.reply_text(
-        f"✅ টাস্ক যোগ করা হয়েছে!\n\n<b>{title}</b>\nReward: ${reward:.2f}\nLink: {link}",
-        parse_mode=ParseMode.HTML,
-    )
-    await send_admin_dashboard(update)
-    return ConversationHandler.END
-
-
-# --------------------------------------------------------------------------- #
-# Admin: Give Bonus conversation
-# --------------------------------------------------------------------------- #
-
-
-async def admin_give_bonus_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return ConversationHandler.END
-    await query.edit_message_text(
-        "🎁 যে ইউজারকে বোনাস দিতে চান তার <b>User ID</b> লিখুন:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=cancel_kb(),
-    )
-    return GIVE_BONUS_ID
-
-
-async def admin_give_bonus_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    try:
-        target_id = int(text)
-    except ValueError:
-        await update.message.reply_text("⚠️ একটি বৈধ User ID (সংখ্যা) লিখুন।", reply_markup=cancel_kb())
-        return GIVE_BONUS_ID
-    if get_user(target_id) is None:
-        await update.message.reply_text(
-            "⚠️ এই User ID খুঁজে পাওয়া যায়নি। আবার চেষ্টা করুন অথবা বাতিল করুন।",
-            reply_markup=cancel_kb(),
-        )
-        return GIVE_BONUS_ID
-    context.user_data["bonus_target"] = target_id
-    await update.message.reply_text(
-        "💵 কত <b>($)</b> বোনাস দিতে চান তা লিখুন:", parse_mode=ParseMode.HTML, reply_markup=cancel_kb()
-    )
-    return GIVE_BONUS_AMOUNT
-
-
-async def admin_give_bonus_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    try:
-        amount = float(text)
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("⚠️ একটি বৈধ সংখ্যা লিখুন।", reply_markup=cancel_kb())
-        return GIVE_BONUS_AMOUNT
-    target_id = context.user_data.get("bonus_target")
-    update_balance(target_id, amount)
-    context.user_data.clear()
-    await update.message.reply_text(f"✅ ${amount:.2f} বোনাস User ID {target_id}-কে দেওয়া হয়েছে।")
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=f"🎉 অভিনন্দন! অ্যাডমিন আপনাকে ${amount:.2f} বোনাস দিয়েছেন।",
-        )
-    except Exception as e:
-        logger.warning("Could not notify user %s: %s", target_id, e)
-    await send_admin_dashboard(update)
-    return ConversationHandler.END
-
-
-# --------------------------------------------------------------------------- #
-# Admin: View Users / Suspicious Users (no conversation needed)
-# --------------------------------------------------------------------------- #
-
-
-async def admin_view_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return
-    users = list_users()
-    if not users:
-        text = "কোনো ইউজার নিবন্ধিত নেই।"
-    else:
-        lines = [f"📊 <b>মোট ইউজার:</b> {len(users)}\n"]
-        for u in users[:50]:
-            status = "🚫" if u["is_blocked"] else "✅"
-            uname = f"@{u['username']}" if u["username"] else "—"
-            lines.append(f"{status} <code>{u['user_id']}</code> {uname} — ${u['balance']:.2f}")
-        if len(users) > 50:
-            lines.append(f"\n...এবং আরও {len(users) - 50} জন ইউজার")
-        text = "\n".join(lines)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb(True))
-
-
-async def admin_suspicious_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return
-    users = list_suspicious_users()
-    if not users:
-        text = "⚠️ বর্তমানে কোনো সন্দেহজনক ইউজার পাওয়া যায়নি।"
-    else:
-        lines = ["⚠️ <b>সন্দেহজনক ইউজার তালিকা</b>", "(একাধিক রেফারেল প্যাটার্নের ভিত্তিতে — যাচাই করে সিদ্ধান্ত নিন)\n"]
-        for u in users[:50]:
-            uname = f"@{u['username']}" if u["username"] else "—"
-            lines.append(
-                f"🔎 <code>{u['user_id']}</code> {uname} — রেফারেল: {u['referral_count']}, ব্যালেন্স: ${u['balance']:.2f}"
+            msg = (
+                f"💸 <b>Withdraw System</b>\n\n"
+                f"• Sorbonimno withdraw: <b>$0.20</b>\n"
+                f"• Proti withdraw fee: <b>$0.02</b>\n\n"
+                f"Apnar poriman likhe reply din (Jemon: 0.50):"
             )
-        text = "\n".join(lines)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb(True))
+            bot_msg = bot.send_message(user_id, msg)
+            bot.register_next_step_handler(bot_msg, process_withdraw)
 
+    elif text == "💼 Task":
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM tasks WHERE task_id NOT IN (
+                SELECT task_id FROM user_tasks WHERE user_id = ?
+            )
+        """, (user_id,))
+        tasks = cursor.fetchall()
+        conn.close()
 
-# --------------------------------------------------------------------------- #
-# Admin: Block / Unblock conversations
-# --------------------------------------------------------------------------- #
+        if not tasks:
+            bot.send_message(user_id, "❌ Bortomane kono notun task nei!")
+            return
 
+        for task in tasks:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔗 Join Group/Channel", url=task['channel_link']))
+            markup.add(types.InlineKeyboardButton("✅ Verify Join", callback_data=f"check_{task['task_id']}"))
+            
+            bot.send_message(
+                user_id,
+                f"📌 <b>Notun Task:</b>\n"
+                f"💰 Reward: <b>${task['reward']:.2f}</b>\n\n"
+                f"Nicher link e join kore Verify button e click korun.",
+                reply_markup=markup
+            )
 
-async def admin_block_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return ConversationHandler.END
-    await query.edit_message_text(
-        "🚫 যে ইউজারকে ব্লক করতে চান তার <b>User ID</b> লিখুন:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=cancel_kb(),
-    )
-    return BLOCK_ID
+    # --- ADMIN PANEL BUTTONS ---
+    elif user_id == ADMIN_ID:
+        if text == "➕ Add Task":
+            msg = bot.send_message(user_id, "Channel/Group er Chat ID, Link, ebong Reward ebhabe din:\n<code>@channelid|https://t.me/example|0.05</code>")
+            bot.register_next_step_handler(msg, process_add_task)
 
+        elif text == "📊 View Users":
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users")
+            all_users = cursor.fetchall()
+            conn.close()
 
-async def admin_block_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+            report = "<b>📊 User List:</b>\n\n"
+            for u in all_users[:20]:
+                report += f"• UID: <code>{u['user_id']}</code> | Balance: ${u['balance']:.2f} | Blocked: {u['is_blocked']}\n"
+            bot.send_message(user_id, report)
+
+        elif text == "⚠️ Suspicious Users":
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE is_suspicious = 1")
+            s_users = cursor.fetchall()
+            conn.close()
+
+            if not s_users:
+                bot.send_message(user_id, "✅ Kono shondehojonok user pawa jayni.")
+            else:
+                msg = "<b>⚠️ Shondehojonok User-gon:</b>\n\n"
+                for u in s_users:
+                    msg += f"• UID: <code>{u['user_id']}</code> | Balance: ${u['balance']:.2f}\n"
+                bot.send_message(user_id, msg)
+
+        elif text == "🚫 Block User":
+            msg = bot.send_message(user_id, "Block korte chaoa user er **UID (Numerical ID)** din:")
+            bot.register_next_step_handler(msg, process_block_user)
+
+        elif text == "✅ Unblock User":
+            msg = bot.send_message(user_id, "Unblock korte chaoa user er **UID (Numerical ID)** din:")
+            bot.register_next_step_handler(msg, process_unblock_user)
+
+        elif text == "🎁 Give Bonus":
+            msg = bot.send_message(user_id, "User ID ebong Bonus ebhabe din:\n<code>USER_ID|AMOUNT</code> (Jemon: 123456|0.10)")
+            bot.register_next_step_handler(msg, process_give_bonus)
+
+# ==================== CALLBACK QUERY HANDLER ====================
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    user_id = call.from_user.id
+    if is_blocked(user_id):
+        return
+
+    if call.data.startswith("lang_"):
+        new_lang = call.data.split("_")[1]
+        conn = get_db()
+        conn.cursor().execute("UPDATE users SET language = ? WHERE user_id = ?", (new_lang, user_id))
+        conn.commit()
+        conn.close()
+        bot.answer_callback_query(call.id, "Language Updated!")
+        bot.send_message(user_id, "Language poribortito hoyeche!", reply_markup=user_menu(new_lang))
+
+    elif call.data.startswith("check_"):
+        task_id = int(call.data.split("_")[1])
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
+        task = cursor.fetchone()
+
+        if not task:
+            bot.answer_callback_query(call.id, "Task-ti pawa jayni!", show_alert=True)
+            conn.close()
+            return
+
+        try:
+            member = bot.get_chat_member(task['channel_id'], user_id)
+            if member.status in ['creator', 'administrator', 'member']:
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (task['reward'], user_id))
+                cursor.execute("INSERT INTO user_tasks (user_id, task_id, reward_given, joined_timestamp) VALUES (?, ?, ?, ?)",
+                               (user_id, task_id, task['reward'], int(time.time())))
+                conn.commit()
+                bot.answer_callback_query(call.id, "✅ Shofolbhabe verified hoyeche! Reward jog kora hoyeche.", show_alert=True)
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            else:
+                bot.answer_callback_query(call.id, "❌ Apni ekhono group e join korhenni!", show_alert=True)
+        except Exception:
+            bot.answer_callback_query(call.id, "❌ Verification bartho! Bot-ti oi group e Admin ache kina check korun.", show_alert=True)
+        conn.close()
+
+# ==================== NEXT STEP HANDLERS ====================
+def process_add_task(message):
     try:
-        target_id = int(text)
-    except ValueError:
-        await update.message.reply_text("⚠️ একটি বৈধ User ID লিখুন।", reply_markup=cancel_kb())
-        return BLOCK_ID
-    if get_user(target_id) is None:
-        await update.message.reply_text("⚠️ এই User ID খুঁজে পাওয়া যায়নি।", reply_markup=cancel_kb())
-        return BLOCK_ID
-    set_blocked(target_id, True)
-    context.user_data.clear()
-    await update.message.reply_text(f"✅ User ID {target_id} ব্লক করা হয়েছে।")
-    await send_admin_dashboard(update)
-    return ConversationHandler.END
+        channel_id, link, reward = message.text.split("|")
+        conn = get_db()
+        conn.cursor().execute("INSERT INTO tasks (channel_id, channel_link, reward) VALUES (?, ?, ?)",
+                              (channel_id.strip(), link.strip(), float(reward.strip())))
+        conn.commit()
+        conn.close()
+        bot.send_message(message.chat.id, "✅ Notun task shofolbhabe jukto kora hoyeche!")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ Format bhul chilo! Kaj batil kora hoyeche.")
 
-
-async def admin_unblock_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if not is_admin(query.from_user.id):
-        return ConversationHandler.END
-    await query.edit_message_text(
-        "✅ যে ইউজারকে আনব্লক করতে চান তার <b>User ID</b> লিখুন:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=cancel_kb(),
-    )
-    return UNBLOCK_ID
-
-
-async def admin_unblock_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+def process_block_user(message):
     try:
-        target_id = int(text)
-    except ValueError:
-        await update.message.reply_text("⚠️ একটি বৈধ User ID লিখুন।", reply_markup=cancel_kb())
-        return UNBLOCK_ID
-    if get_user(target_id) is None:
-        await update.message.reply_text("⚠️ এই User ID খুঁজে পাওয়া যায়নি।", reply_markup=cancel_kb())
-        return UNBLOCK_ID
-    set_blocked(target_id, False)
-    context.user_data.clear()
-    await update.message.reply_text(f"✅ User ID {target_id} আনব্লক করা হয়েছে।")
-    await send_admin_dashboard(update)
-    return ConversationHandler.END
+        uid = int(message.text.strip())
+        conn = get_db()
+        conn.cursor().execute("UPDATE users SET is_blocked = 1 WHERE user_id = ?", (uid,))
+        conn.commit()
+        conn.close()
+        bot.send_message(message.chat.id, f"🚫 User <code>{uid}</code> ke block kora hoyeche.")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ Invalid User ID!")
 
-
-# --------------------------------------------------------------------------- #
-# User: Balance / Tasks / Profile / Referrals / Support (no conversation)
-# --------------------------------------------------------------------------- #
-
-
-async def user_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    u = get_user(query.from_user.id)
-    await query.edit_message_text(
-        f"💰 আপনার বর্তমান ব্যালেন্স: <b>${u['balance']:.2f}</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=back_to_menu_kb(False),
-    )
-
-
-async def user_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    tasks = list_tasks()
-    if not tasks:
-        text = "📋 বর্তমানে কোনো টাস্ক নেই। পরে আবার চেক করুন।"
-    else:
-        lines = ["📋 <b>উপলব্ধ টাস্কসমূহ:</b>\n"]
-        for t in tasks:
-            lines.append(f"• <b>{t['title']}</b> — ${t['reward']:.2f}\n  🔗 {t['link']}\n")
-        text = "\n".join(lines)
-    await query.edit_message_text(
-        text, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb(False), disable_web_page_preview=True
-    )
-
-
-async def user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    u = get_user(query.from_user.id)
-    uname = f"@{u['username']}" if u["username"] else "—"
-    text = (
-        f"👤 <b>প্রোফাইল</b>\n\n"
-        f"নাম: {u['first_name']}\n"
-        f"ইউজারনেম: {uname}\n"
-        f"User ID: <code>{u['user_id']}</code>\n"
-        f"ব্যালেন্স: ${u['balance']:.2f}\n"
-        f"মোট রেফার: {u['referral_count']} জন"
-    )
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb(False))
-
-
-async def user_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    bot_username = context.bot.username
-    u = get_user(query.from_user.id)
-    link = f"https://t.me/{bot_username}?start={u['user_id']}"
-    text = (
-        f"👥 <b>রেফারেল প্রোগ্রাম</b>\n\n"
-        f"আপনার রেফারেল লিংক:\n<code>{link}</code>\n\n"
-        f"প্রতি সফল রেফারেলে আপনি পাবেন: <b>${REFERRAL_BONUS:.2f}</b>\n"
-        f"মোট রেফার করেছেন: {u['referral_count']} জন"
-    )
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb(False))
-
-
-async def user_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        f"🛠 সহায়তার জন্য যোগাযোগ করুন: {SUPPORT_USERNAME}",
-        reply_markup=back_to_menu_kb(False),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# User: Withdraw conversation
-# --------------------------------------------------------------------------- #
-
-
-async def user_withdraw_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    u = get_user(query.from_user.id)
-    if u["is_blocked"]:
-        await query.edit_message_text("🚫 আপনার অ্যাকাউন্ট ব্লক করা আছে, তাই উইথড্র করা যাবে না।")
-        return ConversationHandler.END
-    await query.edit_message_text(
-        f"💳 আপনার ব্যালেন্স: ${u['balance']:.2f}\n\n"
-        "কত টাকা উইথড্র করতে চান তা লিখুন ($):",
-        reply_markup=cancel_kb(),
-    )
-    return WITHDRAW_AMOUNT
-
-
-async def user_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    u = get_user(update.effective_user.id)
+def process_unblock_user(message):
     try:
-        amount = float(text)
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("⚠️ একটি বৈধ সংখ্যা লিখুন।", reply_markup=cancel_kb())
-        return WITHDRAW_AMOUNT
-    if amount > u["balance"]:
-        await update.message.reply_text(
-            f"⚠️ আপনার ব্যালেন্সে এত টাকা নেই। বর্তমান ব্যালেন্স: ${u['balance']:.2f}",
-            reply_markup=cancel_kb(),
-        )
-        return WITHDRAW_AMOUNT
-    context.user_data["withdraw_amount"] = amount
-    await update.message.reply_text(
-        "💼 আপনার পেমেন্ট মেথড ও ডিটেইলস লিখুন (যেমন: bKash 01XXXXXXXXX):",
-        reply_markup=cancel_kb(),
-    )
-    return WITHDRAW_DETAILS
+        uid = int(message.text.strip())
+        conn = get_db()
+        conn.cursor().execute("UPDATE users SET is_blocked = 0 WHERE user_id = ?", (uid,))
+        conn.commit()
+        conn.close()
+        bot.send_message(message.chat.id, f"✅ User <code>{uid}</code> ke unblock kora hoyeche.")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ Invalid User ID!")
 
-
-async def user_withdraw_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    details = update.message.text.strip()
-    amount = context.user_data.get("withdraw_amount")
-    user_id = update.effective_user.id
-    create_withdrawal(user_id, amount, details)
-    context.user_data.clear()
-    await update.message.reply_text(
-        f"✅ আপনার ${amount:.2f} উইথড্র রিকোয়েস্ট জমা হয়েছে এবং পর্যালোচনার অপেক্ষায় আছে।"
-    )
+def process_give_bonus(message):
     try:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                f"💳 নতুন উইথড্র রিকোয়েস্ট\n\n"
-                f"User: <code>{user_id}</code>\nAmount: ${amount:.2f}\nDetails: {details}"
-            ),
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception as e:
-        logger.warning("Could not notify admin of withdrawal: %s", e)
-    await send_user_dashboard(update)
-    return ConversationHandler.END
+        uid, amt = message.text.split("|")
+        uid, amt = int(uid.strip()), float(amt.strip())
+        conn = get_db()
+        conn.cursor().execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amt, uid))
+        conn.commit()
+        conn.close()
+        bot.send_message(message.chat.id, f"🎁 User <code>{uid}</code> ke ${amt} bonus dewa hoyeche.")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ Bhul input!")
 
+def process_withdraw(message):
+    try:
+        amt = float(message.text.strip())
+        user_id = message.from_user.id
+        user = get_user(user_id)
+        
+        if amt < 0.20:
+            bot.send_message(user_id, "❌ Sorbonimno withdraw $0.20 hote hobe.")
+            return
+        
+        total_deduct = amt + 0.02
+        if user['balance'] < total_deduct:
+            bot.send_message(user_id, f"❌ Apnar porjapto balance nei. (Fee shoh mot lagbe ${total_deduct:.2f})")
+            return
+        
+        conn = get_db()
+        conn.cursor().execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (total_deduct, user_id))
+        conn.commit()
+        conn.close()
 
-# --------------------------------------------------------------------------- #
-# Route table used by the auto-cancel fallback
-# --------------------------------------------------------------------------- #
+        bot.send_message(user_id, f"✅ Apnar ${amt:.2f} withdraw request shofolbhabe submit hoyeche! (Fee: $0.02)")
+        bot.send_message(ADMIN_ID, f"🔔 **Notun Withdraw Request:**\nUID: <code>{user_id}</code>\nAmount: ${amt:.2f}")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ Onko-ti shotikbhabe likhun.")
 
-ROUTES = {
-    "admin_view_users": admin_view_users,
-    "admin_suspicious": admin_suspicious_users,
-    "user_balance": user_balance,
-    "user_tasks": user_tasks,
-    "user_profile": user_profile,
-    "user_referrals": user_referrals,
-    "user_support": user_support,
-    "back_to_menu": back_to_menu_callback,
-}
+# ==================== AUTOMATED BACKEND LEAVE DETECTOR ====================
+def background_leave_checker():
+    """10 diner vetor user leave nile balance katar system"""
+    while True:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # 10 days = 864000 seconds
+            ten_days_ago = int(time.time()) - (10 * 86400)
+            
+            cursor.execute("""
+                SELECT ut.id, ut.user_id, ut.task_id, ut.reward_given, t.channel_id 
+                FROM user_tasks ut
+                JOIN tasks t ON ut.task_id = t.task_id
+                WHERE ut.joined_timestamp > ?
+            """, (ten_days_ago,))
+            
+            records = cursor.fetchall()
+            
+            for row in records:
+                try:
+                    member = bot.get_chat_member(row['channel_id'], row['user_id'])
+                    if member.status in ['left', 'kicked']:
+                        cursor.execute("UPDATE users SET balance = balance - ?, is_suspicious = 1 WHERE user_id = ?", 
+                                       (row['reward_given'], row['user_id']))
+                        cursor.execute("DELETE FROM user_tasks WHERE id = ?", (row['id'],))
+                        conn.commit()
+                        
+                        msg = (
+                            f"⚠️ <b>Spam Warning!</b>\n\n"
+                            f"You have left the group/channel, so <b>${row['reward_given']:.2f}</b> has been deducted from your balance.\n"
+                            f"<i>Repeatedly doing this will cause your account to be permanently banned.</i>"
+                        )
+                        bot.send_message(row['user_id'], msg)
+                except Exception:
+                    pass
+            
+            conn.close()
+        except Exception as e:
+            print(f"Checker Error: {e}")
+            
+        time.sleep(1800)
 
+threading.Thread(target=background_leave_checker, daemon=True).start()
 
-# --------------------------------------------------------------------------- #
-# Flask keep-alive server (for Render free-tier uptime pings)
-# --------------------------------------------------------------------------- #
-
-flask_app = Flask(__name__)
-
-
-@flask_app.route("/")
-def home():
-    return "Telegram Earning Bot is running."
-
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=KEEP_ALIVE_PORT)
-
-
-# --------------------------------------------------------------------------- #
-# Application wiring
-# --------------------------------------------------------------------------- #
-
-
-def build_application() -> Application:
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel_command))
-
-    # Simple (non-conversation) callbacks
-    for pattern, func in ROUTES.items():
-        app.add_handler(CallbackQueryHandler(func, pattern=f"^{pattern}$"))
-    app.add_handler(CallbackQueryHandler(global_cancel_callback, pattern="^global_cancel$"))
-
-    common_fallbacks = [
-        CommandHandler("cancel", cancel_command),
-        CallbackQueryHandler(global_cancel_callback, pattern="^global_cancel$"),
-        CallbackQueryHandler(auto_cancel_and_reroute),  # catches any other stray button
-    ]
-
-    add_task_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_add_task_entry, pattern="^admin_add_task$")],
-        states={
-            ADD_TASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_task_title)],
-            ADD_TASK_REWARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_task_reward)],
-            ADD_TASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_task_link)],
-        },
-        fallbacks=common_fallbacks,
-        allow_reentry=True,
-    )
-
-    give_bonus_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_give_bonus_entry, pattern="^admin_give_bonus$")],
-        states={
-            GIVE_BONUS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_give_bonus_id)],
-            GIVE_BONUS_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_give_bonus_amount)],
-        },
-        fallbacks=common_fallbacks,
-        allow_reentry=True,
-    )
-
-    block_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_block_entry, pattern="^admin_block$")],
-        states={BLOCK_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_block_id)]},
-        fallbacks=common_fallbacks,
-        allow_reentry=True,
-    )
-
-    unblock_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_unblock_entry, pattern="^admin_unblock$")],
-        states={UNBLOCK_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_unblock_id)]},
-        fallbacks=common_fallbacks,
-        allow_reentry=True,
-    )
-
-    withdraw_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(user_withdraw_entry, pattern="^user_withdraw$")],
-        states={
-            WITHDRAW_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_withdraw_amount)],
-            WITHDRAW_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_withdraw_details)],
-        },
-        fallbacks=common_fallbacks,
-        allow_reentry=True,
-    )
-
-    for conv in (add_task_conv, give_bonus_conv, block_conv, unblock_conv, withdraw_conv):
-        app.add_handler(conv)
-
-    return app
-
-
-def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable is not set.")
-
-    init_db()
-
-    # Keep-alive web server in a background thread so Render sees an open port.
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    application = build_application()
-    logger.info("Bot starting (polling mode)...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    main()
+# ==================== BOT START ====================
+if __name__ == '__main__':
+    print("Bot is running...")
+    bot.infinity_polling(skip_pending=True)
