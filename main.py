@@ -5,7 +5,7 @@ import threading
 import time
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "8967409217:AAHWrtZgiNfSE09HbAhW3PT2dwmKNUykMuw"  # এখানে আপনার আসল Bot Token বসাবেন
+BOT_TOKEN = "8967409217:AAE-G3g_y1TodUFZzF-gU_S1163NhC23vtg"  # এখানে আপনার আসল Bot Token বসাবেন
 ADMIN_ID =  8808647263            # এখানে আপনার নিজের Numeric Telegram User ID বসাবেন
 SUPPORT_NUMBER = "01720616501"
 
