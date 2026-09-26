@@ -5,7 +5,7 @@ import telebot
 from telebot import types
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Ekhane apnar bot token boshaben
+BOT_TOKEN = "8967409217:AAH8_LX9fVuDCxdyNmEE9q-XCVydywFljKw"  # Ekhane apnar bot token boshaben
 ADMIN_ID = 8808647263               # Apnar Admin ID
 SUPPORT_NUMBER = "01720616501"
 
