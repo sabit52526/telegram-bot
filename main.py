@@ -1,3 +1,20 @@
+import os
+import telebot
+from telebot import types
+import sqlite3
+import threading
+import time
+
+# --- CONFIGURATION (Render Environment Variables) ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "123456789"))  # প্রয়োজনে নিজের Numeric ID বসাবেন
+SUPPORT_NUMBER = "01720616501"
+
+# Official Channel Config
+OFFICIAL_CHANNEL = "@ClickEarnProOfficial" 
+OFFICIAL_LINK = "https://t.me/ClickEarnProOfficial"
+
+bot = telebot.TeleBot(BOT_TOKEN)
 import telebot
 from telebot import types
 import sqlite3
