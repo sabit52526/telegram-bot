@@ -7,7 +7,7 @@ import telebot
 from telebot import types
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Apnar BotFather Token ekhane din
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Apnar BotFather Token ekhane din
 ADMIN_ID = 8808647263                # Apnar Telegram Numeric User ID ekhane din
 OFFICIAL_CHANNEL = "@ClickEarnProOfficial" # Apnar official channel username ekhane din
 MIN_WITHDRAW = 0.20
