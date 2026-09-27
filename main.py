@@ -5,19 +5,34 @@ import logging
 from threading import Thread
 import telebot
 from telebot import types
+from flask import Flask
+
+# ================= RENDER FREE WEB SERVICE KEEP-ALIVE =================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive and running 24/7!"
+
+def run_web_server():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# ব্যাকগ্রাউন্ডে ওয়েব সার্ভার চালু করা
+Thread(target=run_web_server, daemon=True).start()
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Apnar BotFather Token ekhane din
-ADMIN_ID = 8808647263                # Apnar Telegram Numeric User ID ekhane din
-OFFICIAL_CHANNEL = "@ClickEarnProOfficial" # Apnar official channel username ekhane din
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Render Environment Variable থেকে টোকেন নেবে
+ADMIN_ID = 8808647263
+OFFICIAL_CHANNEL = "@ClickEarnProOfficial"
 MIN_WITHDRAW = 0.20
 WITHDRAW_FEE = 0.02
-TEN_DAYS_SEC = 10 * 86400  # 10 days in seconds
+TEN_DAYS_SEC = 10 * 86400  # ১০ দিন (সেকেন্ডে)
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 logging.basicConfig(level=logging.INFO)
 
-USER_STATES = {}  # In-memory input state tracker
+USER_STATES = {}  # ইন-মেমোরি ইনপুট ট্র্যাকার
 
 # ================= DATABASE SETUP =================
 def get_db():
@@ -118,17 +133,15 @@ TEXTS = {
         'withdraw_enter_amount': "🔹 কত ডলার উইথড্র করতে চান লিখুন (সর্বনিম্ন ${min:.2f}):",
         'withdraw_success': "✅ **উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!**\n\n💰 মোট উত্তোলনের পরিমাণ: `${amount:.4f}`\n🔻 ফি বা কমিশন কাটা হয়েছে: `${fee:.4f}`\n📥 আপনি পাবেন: `${net:.4f}`\n\nএডমিন প্যানেল থেকে রিভিউ করে পেমেন্ট সম্পন্ন করা হবে।",
         'insufficient_balance': "❌ আপনার একাউন্টে পর্যাপ্ত মেইন ব্যালেন্স নেই!",
-        'leave_warning': "⚠️ **সতর্কবার্তা!**\n\nআপনি অফিশিয়াল/টাস্ক চ্যানেল থেকে লিভ নেওয়ায় আপনার ব্যালেন্স থেকে ${deducted:.4f} কেটে নেওয়া হয়েছে। পরবর্তীতে এমন করলে একাউন্ট ব্লক করা হতে পারে!",
         'banned_msg': "🚫 আপনার একাউন্টটি সাময়িকভাবে ব্লক করা হয়েছে।",
         
-        # Admin Panel Texts (BN)
+        # Admin Panel Texts
         'admin_menu': "⚙️ **ADMIN PANEL**\n\nনিচের যেকোনো অপশন বেছে নিন:",
         'admin_btn_users': "👥 ইউজার্স লিস্ট",
         'admin_btn_withdraws': "📥 পেন্ডিং উইথড্র",
         'admin_btn_add_task': "➕ টাস্ক এড করুন",
         'admin_btn_broadcast': "📢 ব্রডকাস্ট",
-        'admin_btn_stats': "📊 স্ট্যাটস",
-        'admin_btn_user_edit': "🔍 ইউজার সার্চ / ব্যালেন্স এডিট"
+        'admin_btn_stats': "📊 স্ট্যাটস"
     },
     'en': {
         'welcome': "👋 **Welcome!**\n\nEarn money by completing simple tasks. Please join our official channel to get started.",
@@ -158,17 +171,15 @@ TEXTS = {
         'withdraw_enter_amount': "🔹 Enter withdrawal amount (Min ${min:.2f}):",
         'withdraw_success': "✅ **Withdrawal Request Submitted!**\n\n💰 Total Requested: `${amount:.4f}`\n🔻 Fee Deducted: `${fee:.4f}`\n📥 Net Received: `${net:.4f}`\n\nAdmin will review and process your request soon.",
         'insufficient_balance': "❌ Insufficient main balance!",
-        'leave_warning': "⚠️ **Warning!**\n\nYou left a required channel/group. ${deducted:.4f} was deducted from your balance. Repeated actions may cause account termination!",
         'banned_msg': "🚫 Your account has been suspended.",
         
-        # Admin Panel Texts (EN)
+        # Admin Panel Texts
         'admin_menu': "⚙️ **ADMIN PANEL**\n\nSelect an option below:",
         'admin_btn_users': "👥 Users List",
         'admin_btn_withdraws': "📥 Pending Withdraws",
         'admin_btn_add_task': "➕ Add Task",
         'admin_btn_broadcast': "📢 Broadcast",
-        'admin_btn_stats': "📊 Stats",
-        'admin_btn_user_edit': "🔍 Search User / Edit Balance"
+        'admin_btn_stats': "📊 Stats"
     }
 }
 
@@ -221,7 +232,6 @@ def get_admin_keyboard(user_id):
         types.KeyboardButton(t['admin_btn_add_task']),
         types.KeyboardButton(t['admin_btn_broadcast']),
         types.KeyboardButton(t['admin_btn_stats']),
-        types.KeyboardButton(t['admin_btn_user_edit']),
         types.KeyboardButton("🔙 Main Menu")
     )
     return markup
@@ -294,7 +304,7 @@ def handle_text_messages(message):
     lang = get_user_lang(user_id)
     t = TEXTS[lang]
 
-    # Handle State Cancellation
+    # Dynamic Cancel Handler
     if text in [TEXTS['bn']['btn_cancel'], TEXTS['en']['btn_cancel'], "❌ Cancel"]:
         USER_STATES.pop(user_id, None)
         bot.send_message(user_id, t['action_cancelled'], reply_markup=get_main_keyboard(user_id))
@@ -338,7 +348,7 @@ def handle_text_messages(message):
         msg = t['referral_info'].format(bot_username=bot_info.username, user_id=user_id, ref_count=count)
         bot.send_message(user_id, msg)
 
-    # 🌐 Language / Switch
+    # 🌐 Language Switch
     elif text in [TEXTS['bn']['btn_lang'], TEXTS['en']['btn_lang']]:
         markup = types.InlineKeyboardMarkup()
         markup.add(
@@ -370,14 +380,14 @@ def handle_text_messages(message):
         )
         bot.send_message(user_id, t['withdraw_select_method'], reply_markup=markup)
 
-    # ⚙️ Admin Panel Command / Button
+    # ⚙️ Admin Panel
     elif text == "⚙️ Admin Panel" and user_id == ADMIN_ID:
         bot.send_message(user_id, t['admin_menu'], reply_markup=get_admin_keyboard(user_id))
 
     elif text == "🔙 Main Menu":
         bot.send_message(user_id, t['welcome'], reply_markup=get_main_keyboard(user_id))
 
-    # Admin Panel Sub-Buttons
+    # Admin Panel Actions
     elif user_id == ADMIN_ID:
         handle_admin_buttons(message)
 
@@ -405,7 +415,6 @@ def show_tasks_list(user_id):
     cursor.execute("SELECT * FROM tasks WHERE status = 'active'")
     all_tasks = cursor.fetchall()
     
-    # Filter completed tasks
     cursor.execute("SELECT task_id FROM user_tasks WHERE user_id = ?", (user_id,))
     completed_ids = [row['task_id'] for row in cursor.fetchall()]
     conn.close()
@@ -428,7 +437,6 @@ def task_detail_callback(call):
     user_id = call.from_user.id
     task_id = int(call.data.split("_")[2])
     lang = get_user_lang(user_id)
-    t = TEXTS[lang]
 
     conn = get_db()
     cursor = conn.cursor()
@@ -451,14 +459,12 @@ def task_detail_callback(call):
 def claim_task_callback(call):
     user_id = call.from_user.id
     task_id = int(call.data.split("_")[2])
-    lang = get_user_lang(user_id)
     
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
     task = cursor.fetchone()
 
-    # Insert into user_tasks with 10 days maturity
     matures_at = int(time.time()) + TEN_DAYS_SEC
     cursor.execute(
         "INSERT INTO user_tasks (user_id, task_id, reward, matures_at, status) VALUES (?, ?, ?, ?, 'pending')",
@@ -490,13 +496,11 @@ def process_user_state(message):
     t = TEXTS[lang]
     text = message.text.strip()
 
-    # Step 1: Wallet Address Input
     if state['step'] == 'withdraw_addr':
         state['address'] = text
         state['step'] = 'withdraw_amount'
         bot.send_message(user_id, t['withdraw_enter_amount'].format(min=MIN_WITHDRAW), reply_markup=get_cancel_keyboard(user_id))
 
-    # Step 2: Withdrawal Amount Input
     elif state['step'] == 'withdraw_amount':
         try:
             amount = float(text)
@@ -518,23 +522,20 @@ def process_user_state(message):
         fee = WITHDRAW_FEE
         net_amount = amount - fee
 
-        # Deduct balance & insert withdrawal request
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
         cursor.execute(
             "INSERT INTO withdrawals (user_id, method, address, amount, fee, net_amount, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (user_id, state['method'], state['address'], amount, fee, net_amount, int(time.time()))
         )
 
-        # 🎯 REFERRAL FEE LOGIC FOR 1st WITHDRAWAL 🎯
+        # 🎯 1st WITHDRAWAL REFERRAL FEE BONUS LOGIC 🎯
         if u['has_withdrawn_once'] == 0:
             cursor.execute("UPDATE users SET has_withdrawn_once = 1 WHERE user_id = ?", (user_id,))
             referrer_id = u['referrer_id']
             if referrer_id:
-                # Add $0.02 fee automatically to Referrer's balance
                 cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (WITHDRAW_FEE, referrer_id))
                 try:
-                    ref_lang = get_user_lang(referrer_id)
-                    ref_msg = f"🎉 **Referral Bonus Received!**\n\nYour referred user (ID: `{user_id}`) completed their 1st withdrawal! `${WITHDRAW_FEE:.4f}` has been added to your balance."
+                    ref_msg = f"🎉 **Referral Bonus Received!**\n\nYour referred user (ID: `{user_id}`) made their 1st withdrawal! `${WITHDRAW_FEE:.4f}` fee bonus added to your balance."
                     bot.send_message(referrer_id, ref_msg)
                 except Exception:
                     pass
@@ -542,12 +543,11 @@ def process_user_state(message):
         conn.commit()
         conn.close()
 
-        # Send confirmation message
         success_msg = t['withdraw_success'].format(amount=amount, fee=fee, net=net_amount)
         bot.send_message(user_id, success_msg, reply_markup=get_main_keyboard(user_id))
         USER_STATES.pop(user_id, None)
 
-    # Admin State Handlers
+    # Admin States
     elif state['step'] == 'admin_add_task_bn':
         state['title_bn'] = text
         state['step'] = 'admin_add_task_en'
@@ -604,7 +604,6 @@ def handle_admin_buttons(message):
     user_id = message.from_user.id
     text = message.text.strip()
     lang = get_user_lang(user_id)
-    t = TEXTS[lang]
 
     # Users List
     if text in [TEXTS['bn']['admin_btn_users'], TEXTS['en']['admin_btn_users']]:
@@ -667,7 +666,6 @@ def handle_admin_buttons(message):
         stats_msg = f"📊 **BOT LIVE STATISTICS:**\n\n👥 Total Users: {u_cnt}\n💸 Total Paid Withdrawals: `${w_sum:.4f}`"
         bot.send_message(user_id, stats_msg)
 
-# Withdraw Approval/Rejection Callbacks
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("app_w_", "rej_w_")))
 def handle_withdraw_approval(call):
     action, _, w_id = call.data.split("_")
@@ -698,7 +696,6 @@ def auto_release_pending_rewards():
             cursor = conn.cursor()
             now = int(time.time())
             
-            # Find mature tasks
             cursor.execute("SELECT * FROM user_tasks WHERE status = 'pending' AND matures_at <= ?", (now,))
             matures = cursor.fetchall()
 
@@ -711,7 +708,7 @@ def auto_release_pending_rewards():
             conn.close()
         except Exception as e:
             logging.error(f"Error in auto_release_pending_rewards: {e}")
-        time.sleep(60)  # Check every 1 minute
+        time.sleep(60)
 
 Thread(target=auto_release_pending_rewards, daemon=True).start()
 
