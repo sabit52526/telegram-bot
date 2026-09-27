@@ -307,11 +307,12 @@ def verify_official_join(call):
 def handle_text_messages(message):
     user_id = message.from_user.id
     text = message.text.strip()
+    clean_text = text.lower()
     lang = get_user_lang(user_id)
     t = TEXTS[lang]
 
     # Dynamic Cancel Handler
-    if text in [TEXTS['bn']['btn_cancel'], TEXTS['en']['btn_cancel'], "❌ Cancel"]:
+    if "cancel" in clean_text or "বাতিল" in clean_text:
         USER_STATES.pop(user_id, None)
         bot.send_message(user_id, t['action_cancelled'], reply_markup=get_main_keyboard(user_id))
         return
@@ -327,7 +328,7 @@ def handle_text_messages(message):
         return
 
     # 💰 Balance
-    if text in [TEXTS['bn']['btn_balance'], TEXTS['en']['btn_balance']]:
+    if "ব্যালেন্স" in text or "balance" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT balance, pending_balance FROM users WHERE user_id = ?", (user_id,))
@@ -337,7 +338,7 @@ def handle_text_messages(message):
         bot.send_message(user_id, msg)
 
     # 👤 Profile
-    elif text in [TEXTS['bn']['btn_profile'], TEXTS['en']['btn_profile']]:
+    elif "প্রোফাইল" in text or "profile" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT joined_at FROM users WHERE user_id = ?", (user_id,))
@@ -349,7 +350,7 @@ def handle_text_messages(message):
         bot.send_message(user_id, msg)
 
     # 👥 My Referrals
-    elif text in [TEXTS['bn']['btn_referrals'], TEXTS['en']['btn_referrals']]:
+    elif "রেফারেল" in text or "referral" in clean_text:
         bot_info = bot.get_me()
         conn = get_db()
         cursor = conn.cursor()
@@ -360,7 +361,7 @@ def handle_text_messages(message):
         bot.send_message(user_id, msg)
 
     # 🌐 Language Switch
-    elif text in [TEXTS['bn']['btn_lang'], TEXTS['en']['btn_lang']]:
+    elif "ভাষা" in text or "language" in clean_text:
         markup = types.InlineKeyboardMarkup()
         markup.add(
             types.InlineKeyboardButton("🇧🇩 বাংলা", callback_data="set_lang_bn"),
@@ -369,11 +370,11 @@ def handle_text_messages(message):
         bot.send_message(user_id, t['lang_select'], reply_markup=markup)
 
     # 📋 Tasks Keyboard View
-    elif text in [TEXTS['bn']['btn_tasks'], TEXTS['en']['btn_tasks']]:
+    elif "কাজ" in text or "tasks" in clean_text or "task" in clean_text:
         show_tasks_keyboard(user_id)
 
     # 📥 Withdraw
-    elif text in [TEXTS['bn']['btn_withdraw'], TEXTS['en']['btn_withdraw']]:
+    elif "উত্তোলন" in text or "withdraw" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
@@ -392,10 +393,10 @@ def handle_text_messages(message):
         bot.send_message(user_id, t['withdraw_select_method'], reply_markup=markup)
 
     # ⚙️ Admin Panel
-    elif text == "⚙️ Admin Panel" and user_id == ADMIN_ID:
+    elif "admin panel" in clean_text and user_id == ADMIN_ID:
         bot.send_message(user_id, t['admin_menu'], reply_markup=get_admin_keyboard(user_id))
 
-    elif text == "🔙 Main Menu":
+    elif "main menu" in clean_text or "প্রধান মেনু" in text:
         bot.send_message(user_id, t['welcome'], reply_markup=get_main_keyboard(user_id))
 
     # Admin Panel Actions
@@ -694,9 +695,10 @@ def process_user_state(message):
 def handle_admin_buttons(message):
     user_id = message.from_user.id
     text = message.text.strip()
+    clean_text = text.lower()
 
     # Users List
-    if text in [TEXTS['bn']['admin_btn_users'], TEXTS['en']['admin_btn_users']]:
+    if "ইউজার্স" in text or "users" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, balance, is_banned FROM users LIMIT 20")
@@ -713,7 +715,7 @@ def handle_admin_buttons(message):
         bot.send_message(user_id, msg, reply_markup=markup)
 
     # Pending Withdrawals
-    elif text in [TEXTS['bn']['admin_btn_withdraws'], TEXTS['en']['admin_btn_withdraws']]:
+    elif "উইথড্র" in text or "withdraws" in clean_text or "pending" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM withdrawals WHERE status = 'pending'")
@@ -734,17 +736,17 @@ def handle_admin_buttons(message):
             bot.send_message(user_id, w_msg, reply_markup=markup)
 
     # Add Task
-    elif text in [TEXTS['bn']['admin_btn_add_task'], TEXTS['en']['admin_btn_add_task']]:
+    elif "টাস্ক" in text or "add task" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_add_task_bn'}
         bot.send_message(user_id, "🔹 Enter Task Title in Bangla:", reply_markup=get_cancel_keyboard(user_id))
 
     # Broadcast
-    elif text in [TEXTS['bn']['admin_btn_broadcast'], TEXTS['en']['admin_btn_broadcast']]:
+    elif "ব্রডকাস্ট" in text or "broadcast" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_broadcast'}
         bot.send_message(user_id, "📢 Enter message to broadcast to ALL users:", reply_markup=get_cancel_keyboard(user_id))
 
     # Stats
-    elif text in [TEXTS['bn']['admin_btn_stats'], TEXTS['en']['admin_btn_stats']]:
+    elif "স্ট্যাটস" in text or "stats" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as total_users FROM users")
@@ -757,12 +759,12 @@ def handle_admin_buttons(message):
         bot.send_message(user_id, stats_msg)
 
     # Give Bonus
-    elif text in [TEXTS['bn']['admin_btn_bonus'], TEXTS['en']['admin_btn_bonus']]:
+    elif "বোনাস" in text or "bonus" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_bonus_id'}
         bot.send_message(user_id, "🔹 যে ইউজারকে বোনাস দিতে চান তার **User ID** লিখুন:", reply_markup=get_cancel_keyboard(user_id))
 
     # Block / Unblock User
-    elif text in [TEXTS['bn']['admin_btn_ban'], TEXTS['en']['admin_btn_ban']]:
+    elif "ব্লক" in text or "ban" in clean_text or "unblock" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_toggle_ban_id'}
         bot.send_message(user_id, "🔹 যে ইউজারকে ব্লক বা আনব্লক করতে চান তার **User ID** লিখুন:", reply_markup=get_cancel_keyboard(user_id))
 
