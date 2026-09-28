@@ -18,11 +18,10 @@ def run_web_server():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-# Background-e web server chaluk
 Thread(target=run_web_server, daemon=True).start()
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Render Environment Variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 8808647263
 OFFICIAL_CHANNEL = "@ClickEarnProOfficial"
 SUPPORT_USERNAME = "@ClickEarnSupport"
@@ -33,7 +32,7 @@ TEN_DAYS_SEC = 10 * 86400  # 10 days in seconds
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 logging.basicConfig(level=logging.INFO)
 
-USER_STATES = {}  # In-memory input state tracker
+USER_STATES = {}
 
 # ================= DATABASE SETUP =================
 def get_db():
@@ -45,7 +44,6 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor()
     
-    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -59,7 +57,6 @@ def init_db():
         )
     ''')
     
-    # Tasks table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,7 +69,6 @@ def init_db():
         )
     ''')
     
-    # User completed tasks table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,13 +81,11 @@ def init_db():
         )
     ''')
 
-    # Migration check for existing DB
     try:
         cursor.execute("ALTER TABLE user_tasks ADD COLUMN warning_at INTEGER DEFAULT 0")
     except Exception:
         pass
     
-    # Withdrawals table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,7 +139,6 @@ TEXTS = {
         'banned_msg': "🚫 আপনার একাউন্টটি সাময়িকভাবে ব্লক করা হয়েছে।",
         'support_msg': "📞 **এডমিন সাপোর্ট:**\n\nযেকোনো সমস্যায় আমাদের অফিশিয়াল সাপোর্টে যোগাযোগ করুন:\n👉 {support_username}",
         
-        # Admin Panel
         'admin_menu': "⚙️ **ADMIN PANEL**\n\nনিচের যেকোনো অপশন বেছে নিন:",
         'admin_btn_users': "👥 ইউজার্স লিস্ট",
         'admin_btn_withdraws': "📥 পেন্ডিং উইথড্র",
@@ -188,7 +181,6 @@ TEXTS = {
         'banned_msg': "🚫 Your account has been suspended.",
         'support_msg': "📞 **Admin Support:**\n\nContact our official support for any issues:\n👉 {support_username}",
         
-        # Admin Panel
         'admin_menu': "⚙️ **ADMIN PANEL**\n\nSelect an option below:",
         'admin_btn_users': "👥 Users List",
         'admin_btn_withdraws': "📥 Pending Withdraws",
@@ -232,15 +224,25 @@ def extract_channel_handle(link):
         return f"@{clean_link}"
     return None
 
+# SMART VERIFICATION LOGIC FIX
 def is_user_joined(user_id, channel_username):
     if not channel_username:
         return True
     try:
         member = bot.get_chat_member(channel_username, user_id)
-        return member.status in ['creator', 'administrator', 'member']
-    except Exception as e:
-        logging.error(f"Verification check failed for {user_id} in {channel_username}: {e}")
+        if member.status in ['creator', 'administrator', 'member']:
+            return True
+        elif member.status in ['left', 'kicked']:
+            return False
         return False
+    except Exception as e:
+        err_str = str(e).lower()
+        # Telegaram explicitly confirms user is not in the chat
+        if "user_not_participant" in err_str or "user not found" in err_str:
+            return False
+        # If bot lacks admin/access rights in third-party channels/groups, bypass restriction
+        logging.warning(f"Verification bypassed for {user_id} in {channel_username}: {e}")
+        return True
 
 def check_user_access(user_id, chat_id=None):
     conn = get_db()
@@ -494,7 +496,6 @@ def show_tasks_keyboard(user_id):
     cursor.execute("SELECT * FROM tasks WHERE status = 'active'")
     all_tasks = cursor.fetchall()
     
-    # Hide tasks that are pending, warning, or completed
     cursor.execute("SELECT task_id FROM user_tasks WHERE user_id = ? AND status IN ('pending', 'warning', 'completed')", (user_id,))
     completed_task_ids = [row['task_id'] for row in cursor.fetchall()]
     conn.close()
@@ -590,7 +591,7 @@ def claim_task_callback(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     show_tasks_keyboard(user_id)
 
-# ================= REJOIN VERIFY CALLBACK (5 MINUTE TIMER) =================
+# ================= REJOIN VERIFY CALLBACK =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("rejoin_verify_"))
 def handle_rejoin_verify(call):
     user_id = call.from_user.id
@@ -705,7 +706,6 @@ def process_user_state(message):
         bot.send_message(user_id, success_msg, reply_markup=get_main_keyboard(user_id))
         USER_STATES.pop(user_id, None)
 
-    # Admin States
     elif state['step'] == 'admin_add_task_bn':
         state['title_bn'] = text
         state['step'] = 'admin_add_task_en'
@@ -977,7 +977,6 @@ def check_task_leaving_and_penalty():
             cursor = conn.cursor()
             now = int(time.time())
             
-            # 1. Detect leaves for active pending/completed tasks -> Set 5-min warning
             cursor.execute('''
                 SELECT ut.id as ut_id, ut.user_id, ut.task_id, ut.reward, ut.status as ut_status, 
                        t.title_bn, t.title_en, t.link 
@@ -1010,7 +1009,6 @@ def check_task_leaving_and_penalty():
                     except Exception:
                         pass
 
-            # 2. Monitor warning status tasks (auto-revert if rejoined, or deduct if 5 mins expired)
             cursor.execute('''
                 SELECT ut.id as ut_id, ut.user_id, ut.task_id, ut.reward, ut.warning_at, ut.status as ut_status,
                        t.title_bn, t.title_en, t.link 
@@ -1024,7 +1022,6 @@ def check_task_leaving_and_penalty():
                 u_id = ut['user_id']
                 channel_handle = extract_channel_handle(ut['link'])
                 
-                # Auto-recovery if user rejoined on their own
                 if channel_handle and is_user_joined(u_id, channel_handle):
                     cursor.execute("UPDATE user_tasks SET status = 'pending', warning_at = 0 WHERE id = ?", (ut['ut_id'],))
                     conn.commit()
@@ -1035,7 +1032,6 @@ def check_task_leaving_and_penalty():
                     except Exception:
                         pass
                 
-                # Penalty deduction if 5 minutes (300 seconds) passed without re-joining
                 elif now - ut['warning_at'] >= 300:
                     reward = ut['reward']
                     cursor.execute("SELECT balance, pending_balance FROM users WHERE user_id = ?", (u_id,))
@@ -1071,5 +1067,5 @@ Thread(target=check_task_leaving_and_penalty, daemon=True).start()
 
 # ================= BOT RUNNER =================
 if __name__ == "__main__":
-    print("🤖 Bot started successfully with 5-minute grace period logic...")
+    print("🤖 Bot started with updated smart verification logic...")
     bot.infinity_polling()
