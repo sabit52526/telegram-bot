@@ -22,9 +22,10 @@ def run_web_server():
 Thread(target=run_web_server, daemon=True).start()
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Render Environment Variable theke token nebe
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Render Environment Variable
 ADMIN_ID = 8808647263
 OFFICIAL_CHANNEL = "@ClickEarnProOfficial"
+SUPPORT_USERNAME = "@ClickEarnSupport"
 MIN_WITHDRAW = 0.20
 WITHDRAW_FEE = 0.02
 TEN_DAYS_SEC = 10 * 86400  # 10 days in seconds
@@ -79,9 +80,16 @@ def init_db():
             task_id INTEGER,
             reward REAL,
             matures_at INTEGER,
-            status TEXT DEFAULT 'pending'
+            status TEXT DEFAULT 'pending',
+            warning_at INTEGER DEFAULT 0
         )
     ''')
+
+    # Migration check for existing DB
+    try:
+        cursor.execute("ALTER TABLE user_tasks ADD COLUMN warning_at INTEGER DEFAULT 0")
+    except Exception:
+        pass
     
     # Withdrawals table
     cursor.execute('''
@@ -103,7 +111,7 @@ def init_db():
 
 init_db()
 
-# ================= BILINGUAL DICTIONARY (BN & EN) =================
+# ================= BILINGUAL DICTIONARY =================
 TEXTS = {
     'bn': {
         'welcome': "👋 **স্বাগতম!**\n\nসহজ কাজ করে টাকা আয় করুন। বোটে কাজ শুরু করতে প্রথমে আমাদের অফিশিয়াল চ্যানেলে জয়েন করুন।",
@@ -118,6 +126,7 @@ TEXTS = {
         'btn_profile': "👤 প্রোফাইল",
         'btn_referrals': "👥 আমার রেফারেল",
         'btn_lang': "🌐 ভাষা / Language",
+        'btn_support': "📞 সাপোর্ট / Support",
         'btn_cancel': "❌ Cancel",
         'action_cancelled': "👍 কাজ বাতিল করা হয়েছে।",
         'balance_info': "💰 **আপনার ওয়ালেট বিবরণ:**\n\nMain Balance: `${balance:.4f}`\nPending Balance: `${pending:.4f}`\n\n*(১০ দিন পেন্ডিং থাকার পর জয়েন টাস্কের টাকা মেইন ব্যালেন্সে যুক্ত হবে)*",
@@ -134,13 +143,14 @@ TEXTS = {
         'withdraw_success': "✅ **উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!**\n\n💰 মোট উত্তোলনের পরিমাণ: `${amount:.4f}`\n🔻 ফি বা কমিশন কাটা হয়েছে: `${fee:.4f}`\n📥 আপনি পাবেন: `${net:.4f}`\n\nএডমিন প্যানেল থেকে রিভিউ করে পেমেন্ট সম্পন্ন করা হবে।",
         'insufficient_balance': "❌ আপনার একাউন্টে পর্যাপ্ত মেইন ব্যালেন্স নেই!",
         'banned_msg': "🚫 আপনার একাউন্টটি সাময়িকভাবে ব্লক করা হয়েছে।",
-        'task_leave_warning': "⚠️ **সতর্কবার্তা / Warning!**\n\nআপনি **{task_title}** চ্যানেলটি থেকে ১০ দিন পূর্ণ হওয়ার আগেই বের হয়ে গেছেন!\n\n🔻 নিয়ম ভঙ্গের কারণে আপনার ব্যালেন্স থেকে `${reward:.4f}` ডলার কেটে নেওয়া হলো।\n\n⚠️ **সতর্কতা:** পরবর্তীতে পুনরায় এমন করলে আপনার অ্যাকাউন্টটি স্থায়ীভাবে ব্লক (Ban) করে দেওয়া হতে পারে।",
+        'support_msg': "📞 **এডমিন সাপোর্ট:**\n\nযেকোনো সমস্যায় আমাদের অফিশিয়াল সাপোর্টে যোগাযোগ করুন:\n👉 {support_username}",
         
-        # Admin Panel Texts
+        # Admin Panel
         'admin_menu': "⚙️ **ADMIN PANEL**\n\nনিচের যেকোনো অপশন বেছে নিন:",
         'admin_btn_users': "👥 ইউজার্স লিস্ট",
         'admin_btn_withdraws': "📥 পেন্ডিং উইথড্র",
         'admin_btn_add_task': "➕ টাস্ক এড করুন",
+        'admin_btn_del_task': "❌ টাস্ক মুছে ফেলুন",
         'admin_btn_broadcast': "📢 ব্রডকাস্ট",
         'admin_btn_stats': "📊 স্ট্যাটস",
         'admin_btn_bonus': "🎁 বোনাস দিন",
@@ -159,6 +169,7 @@ TEXTS = {
         'btn_profile': "👤 Profile",
         'btn_referrals': "👥 My Referrals",
         'btn_lang': "🌐 Language / ভাষা",
+        'btn_support': "📞 Support / সাপোর্ট",
         'btn_cancel': "❌ Cancel",
         'action_cancelled': "👍 Action cancelled.",
         'balance_info': "💰 **Your Wallet Details:**\n\nMain Balance: `${balance:.4f}`\nPending Balance: `${pending:.4f}`\n\n*(Pending task rewards unlock after 10 days)*",
@@ -175,13 +186,14 @@ TEXTS = {
         'withdraw_success': "✅ **Withdrawal Request Submitted!**\n\n💰 Total Requested: `${amount:.4f}`\n🔻 Fee Deducted: `${fee:.4f}`\n📥 Net Received: `${net:.4f}`\n\nAdmin will review and process your request soon.",
         'insufficient_balance': "❌ Insufficient main balance!",
         'banned_msg': "🚫 Your account has been suspended.",
-        'task_leave_warning': "⚠️ **Warning!**\n\nYou left the **{task_title}** channel before 10 days!\n\n🔻 `${reward:.4f}` has been deducted from your balance for violating rules.\n\n⚠️ **Warning:** Repeated violations may lead to a permanent account ban.",
+        'support_msg': "📞 **Admin Support:**\n\nContact our official support for any issues:\n👉 {support_username}",
         
-        # Admin Panel Texts
+        # Admin Panel
         'admin_menu': "⚙️ **ADMIN PANEL**\n\nSelect an option below:",
         'admin_btn_users': "👥 Users List",
         'admin_btn_withdraws': "📥 Pending Withdraws",
         'admin_btn_add_task': "➕ Add Task",
+        'admin_btn_del_task': "❌ Delete Task",
         'admin_btn_broadcast': "📢 Broadcast",
         'admin_btn_stats': "📊 Stats",
         'admin_btn_bonus': "🎁 Give Bonus",
@@ -198,32 +210,39 @@ def get_user_lang(user_id):
     conn.close()
     return row['lang'] if row else 'bn'
 
-def is_user_joined(user_id, channel_username):
-    try:
-        member = bot.get_chat_member(channel_username, user_id)
-        return member.status in ['creator', 'administrator', 'member']
-    except Exception:
-        return False
-
 def extract_channel_handle(link):
     if not link:
         return None
-    clean_link = link.strip().rstrip('/')
+    clean_link = link.strip()
+    if "?" in clean_link:
+        clean_link = clean_link.split("?")[0]
+    clean_link = clean_link.rstrip('/')
+    
     if "t.me/" in clean_link:
         parts = clean_link.split("t.me/")[-1].split("/")
-        username = parts[0]
-        if not username.startswith("@") and not username.startswith("+"):
-            return f"@{username}"
-        return username
+        handle = parts[0]
+        if handle.startswith("+") or handle.startswith("joinchat"):
+            return None
+        if not handle.startswith("@"):
+            return f"@{handle}"
+        return handle
     elif clean_link.startswith("@"):
         return clean_link
+    elif not clean_link.startswith("http"):
+        return f"@{clean_link}"
     return None
 
+def is_user_joined(user_id, channel_username):
+    if not channel_username:
+        return True
+    try:
+        member = bot.get_chat_member(channel_username, user_id)
+        return member.status in ['creator', 'administrator', 'member']
+    except Exception as e:
+        logging.error(f"Verification check failed for {user_id} in {channel_username}: {e}")
+        return False
+
 def check_user_access(user_id, chat_id=None):
-    """
-    STRICT SECURITY GUARD:
-    Checks Ban status AND Permanent Official Channel Join status.
-    """
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
@@ -233,7 +252,6 @@ def check_user_access(user_id, chat_id=None):
     lang = get_user_lang(user_id)
     t = TEXTS[lang]
 
-    # 1. Strict Ban Check
     if row and row['is_banned']:
         if chat_id:
             try:
@@ -242,11 +260,9 @@ def check_user_access(user_id, chat_id=None):
                 pass
         return False
 
-    # 2. Admin Bypass for Official Channel check
     if user_id == ADMIN_ID:
         return True
 
-    # 3. Permanent Official Channel Join Check
     if not is_user_joined(user_id, OFFICIAL_CHANNEL):
         if chat_id:
             try:
@@ -272,6 +288,7 @@ def get_main_keyboard(user_id):
         types.KeyboardButton(t['btn_withdraw']),
         types.KeyboardButton(t['btn_profile']),
         types.KeyboardButton(t['btn_referrals']),
+        types.KeyboardButton(t['btn_support']),
         types.KeyboardButton(t['btn_lang'])
     )
     if user_id == ADMIN_ID:
@@ -293,6 +310,7 @@ def get_admin_keyboard(user_id):
         types.KeyboardButton(t['admin_btn_users']),
         types.KeyboardButton(t['admin_btn_withdraws']),
         types.KeyboardButton(t['admin_btn_add_task']),
+        types.KeyboardButton(t['admin_btn_del_task']),
         types.KeyboardButton(t['admin_btn_broadcast']),
         types.KeyboardButton(t['admin_btn_stats']),
         types.KeyboardButton(t['admin_btn_bonus']),
@@ -308,7 +326,6 @@ def handle_start(message):
     conn = get_db()
     cursor = conn.cursor()
     
-    # Check ban status
     cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if row and row['is_banned']:
@@ -317,7 +334,6 @@ def handle_start(message):
         conn.close()
         return
 
-    # Handle Referral
     args = message.text.split()
     referrer_id = None
     if len(args) > 1 and args[1].isdigit():
@@ -334,7 +350,6 @@ def handle_start(message):
 
     conn.close()
     
-    # Strict Access Check (Official Channel check)
     if not check_user_access(user_id, message.chat.id):
         return
 
@@ -353,7 +368,7 @@ def verify_official_join(call):
     else:
         bot.answer_callback_query(call.id, t['not_joined'], show_alert=True)
 
-# ================= MAIN MENU BUTTON ROUTING =================
+# ================= MAIN MENU ROUTING =================
 @bot.message_handler(func=lambda m: True)
 def handle_text_messages(message):
     user_id = message.from_user.id
@@ -361,30 +376,25 @@ def handle_text_messages(message):
     text = message.text.strip()
     clean_text = text.lower()
 
-    # 🛑 SECURITY CHECK (Banned & Official Channel Permanent Check)
     if not check_user_access(user_id, chat_id):
         return
 
     lang = get_user_lang(user_id)
     t = TEXTS[lang]
 
-    # Dynamic Cancel Handler
     if "cancel" in clean_text or "বাতিল" in clean_text:
         USER_STATES.pop(user_id, None)
         bot.send_message(user_id, t['action_cancelled'], reply_markup=get_main_keyboard(user_id))
         return
 
-    # Task Selection Handling from Custom Keyboard
     if text.startswith("📌 "):
         handle_selected_task_button(user_id, text)
         return
 
-    # Check Active Input State
     if user_id in USER_STATES:
         process_user_state(message)
         return
 
-    # 💰 Balance
     if "ব্যালেন্স" in text or "balance" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
@@ -394,7 +404,6 @@ def handle_text_messages(message):
         msg = t['balance_info'].format(balance=u['balance'], pending=u['pending_balance'])
         bot.send_message(user_id, msg)
 
-    # 👤 Profile
     elif "প্রোফাইল" in text or "profile" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
@@ -406,7 +415,6 @@ def handle_text_messages(message):
         msg = t['profile_info'].format(user_id=user_id, lang_name=lang_name, date=date_str)
         bot.send_message(user_id, msg)
 
-    # 👥 My Referrals
     elif "রেফারেল" in text or "referral" in clean_text:
         bot_info = bot.get_me()
         conn = get_db()
@@ -417,7 +425,10 @@ def handle_text_messages(message):
         msg = t['referral_info'].format(bot_username=bot_info.username, user_id=user_id, ref_count=count)
         bot.send_message(user_id, msg)
 
-    # 🌐 Language Switch
+    elif "সাপোর্ট" in text or "support" in clean_text:
+        msg = t['support_msg'].format(support_username=SUPPORT_USERNAME)
+        bot.send_message(user_id, msg)
+
     elif "ভাষা" in text or "language" in clean_text:
         markup = types.InlineKeyboardMarkup()
         markup.add(
@@ -426,11 +437,9 @@ def handle_text_messages(message):
         )
         bot.send_message(user_id, t['lang_select'], reply_markup=markup)
 
-    # 📋 Tasks Keyboard View
     elif "কাজ" in text or "tasks" in clean_text or "task" in clean_text:
         show_tasks_keyboard(user_id)
 
-    # 📥 Withdraw
     elif "উত্তোলন" in text or "withdraw" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
@@ -449,14 +458,12 @@ def handle_text_messages(message):
         )
         bot.send_message(user_id, t['withdraw_select_method'], reply_markup=markup)
 
-    # ⚙️ Admin Panel
     elif "admin panel" in clean_text and user_id == ADMIN_ID:
         bot.send_message(user_id, t['admin_menu'], reply_markup=get_admin_keyboard(user_id))
 
     elif "main menu" in clean_text or "প্রধান মেনু" in text:
         bot.send_message(user_id, t['welcome'], reply_markup=get_main_keyboard(user_id))
 
-    # Admin Panel Actions
     elif user_id == ADMIN_ID:
         handle_admin_buttons(message)
 
@@ -478,7 +485,7 @@ def set_language_callback(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     bot.send_message(user_id, TEXTS[new_lang]['welcome'], reply_markup=get_main_keyboard(user_id))
 
-# ================= TASKS SYSTEM (REPLY KEYBOARD) =================
+# ================= TASKS SYSTEM =================
 def show_tasks_keyboard(user_id):
     lang = get_user_lang(user_id)
     t = TEXTS[lang]
@@ -487,11 +494,12 @@ def show_tasks_keyboard(user_id):
     cursor.execute("SELECT * FROM tasks WHERE status = 'active'")
     all_tasks = cursor.fetchall()
     
-    cursor.execute("SELECT task_id FROM user_tasks WHERE user_id = ? AND status != 'penalized'", (user_id,))
-    completed_ids = [row['task_id'] for row in cursor.fetchall()]
+    # Hide tasks that are pending, warning, or completed
+    cursor.execute("SELECT task_id FROM user_tasks WHERE user_id = ? AND status IN ('pending', 'warning', 'completed')", (user_id,))
+    completed_task_ids = [row['task_id'] for row in cursor.fetchall()]
     conn.close()
 
-    available_tasks = [task for task in all_tasks if task['id'] not in completed_ids]
+    available_tasks = [task for task in all_tasks if task['id'] not in completed_task_ids]
 
     if not available_tasks:
         bot.send_message(user_id, t['no_tasks'], reply_markup=get_main_keyboard(user_id))
@@ -541,8 +549,10 @@ def claim_task_callback(call):
     conn = get_db()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT id FROM user_tasks WHERE user_id = ? AND task_id = ? AND status != 'penalized'", (user_id, task_id))
-    if cursor.fetchone():
+    cursor.execute("SELECT id, status FROM user_tasks WHERE user_id = ? AND task_id = ?", (user_id, task_id))
+    existing_task = cursor.fetchone()
+
+    if existing_task and existing_task['status'] in ['pending', 'warning', 'completed']:
         bot.answer_callback_query(call.id, "❌ Task already claimed!", show_alert=True)
         conn.close()
         return
@@ -553,18 +563,25 @@ def claim_task_callback(call):
         conn.close()
         return
 
-    # Task Verification Check BEFORE claiming
     channel_handle = extract_channel_handle(task['link'])
     if channel_handle and not is_user_joined(user_id, channel_handle):
-        bot.answer_callback_query(call.id, "❌ আপনি টাস্কের চ্যানেলে জয়েন করেননি! আগে জয়েন করুন।", show_alert=True)
+        bot.answer_callback_query(call.id, f"❌ আপনি টাস্কের চ্যানেলে ({channel_handle}) জয়েন করেননি! আগে জয়েন করুন।", show_alert=True)
         conn.close()
         return
 
     matures_at = int(time.time()) + TEN_DAYS_SEC
-    cursor.execute(
-        "INSERT INTO user_tasks (user_id, task_id, reward, matures_at, status) VALUES (?, ?, ?, ?, 'pending')",
-        (user_id, task_id, task['reward'], matures_at)
-    )
+
+    if existing_task and existing_task['status'] == 'penalized':
+        cursor.execute(
+            "UPDATE user_tasks SET reward = ?, matures_at = ?, status = 'pending', warning_at = 0 WHERE id = ?",
+            (task['reward'], matures_at, existing_task['id'])
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO user_tasks (user_id, task_id, reward, matures_at, status) VALUES (?, ?, ?, ?, 'pending')",
+            (user_id, task_id, task['reward'], matures_at)
+        )
+
     cursor.execute("UPDATE users SET pending_balance = pending_balance + ? WHERE user_id = ?", (task['reward'], user_id))
     conn.commit()
     conn.close()
@@ -572,6 +589,49 @@ def claim_task_callback(call):
     bot.answer_callback_query(call.id, "✅ Task completed! Reward added to Pending Balance (Unlocks in 10 days).", show_alert=True)
     bot.delete_message(call.message.chat.id, call.message.message_id)
     show_tasks_keyboard(user_id)
+
+# ================= REJOIN VERIFY CALLBACK (5 MINUTE TIMER) =================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("rejoin_verify_"))
+def handle_rejoin_verify(call):
+    user_id = call.from_user.id
+    if not check_user_access(user_id, call.message.chat.id):
+        return
+
+    ut_id = int(call.data.split("_")[2])
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT ut.id, ut.status, t.title_bn, t.title_en, t.link 
+        FROM user_tasks ut 
+        JOIN tasks t ON ut.task_id = t.id 
+        WHERE ut.id = ? AND ut.user_id = ?
+    ''', (ut_id, user_id))
+    task = cursor.fetchone()
+
+    if not task:
+        bot.answer_callback_query(call.id, "❌ Task record not found!", show_alert=True)
+        conn.close()
+        return
+
+    if task['status'] != 'warning':
+        bot.answer_callback_query(call.id, "ℹ️ এই ওয়ার্নিংটি এখন আর কার্যকর নেই।", show_alert=True)
+        conn.close()
+        return
+
+    channel_handle = extract_channel_handle(task['link'])
+    if channel_handle and is_user_joined(user_id, channel_handle):
+        cursor.execute("UPDATE user_tasks SET status = 'pending', warning_at = 0 WHERE id = ?", (ut_id,))
+        conn.commit()
+        conn.close()
+        
+        lang = get_user_lang(user_id)
+        title = task['title_bn'] if lang == 'bn' else task['title_en']
+        bot.answer_callback_query(call.id, "✅ রি-জয়েন সফল হয়েছে! আপনার ব্যালেন্স কাটা হয়নি।", show_alert=True)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_message(user_id, f"✅ **ধন্যবাদ!** আপনি **{title}** চ্যানেলে সফলভাবে রি-জয়েন করেছেন। আপনার ব্যালেন্স অপরিবর্তিত আছে।")
+    else:
+        bot.answer_callback_query(call.id, "❌ আপনি এখনও চ্যানেলে রি-জয়েন করেননি! আগে জয়েন করে বাটনে চাপুন।", show_alert=True)
+        conn.close()
 
 # ================= WITHDRAW SYSTEM =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("withdraw_meth_"))
@@ -627,7 +687,6 @@ def process_user_state(message):
             (user_id, state['method'], state['address'], amount, fee, net_amount, int(time.time()))
         )
 
-        # 🎯 1st WITHDRAWAL REFERRAL FEE BONUS LOGIC 🎯
         if u['has_withdrawn_once'] == 0:
             cursor.execute("UPDATE users SET has_withdrawn_once = 1 WHERE user_id = ?", (user_id,))
             referrer_id = u['referrer_id']
@@ -646,7 +705,7 @@ def process_user_state(message):
         bot.send_message(user_id, success_msg, reply_markup=get_main_keyboard(user_id))
         USER_STATES.pop(user_id, None)
 
-    # Admin States - Add Task
+    # Admin States
     elif state['step'] == 'admin_add_task_bn':
         state['title_bn'] = text
         state['step'] = 'admin_add_task_en'
@@ -655,7 +714,7 @@ def process_user_state(message):
     elif state['step'] == 'admin_add_task_en':
         state['title_en'] = text
         state['step'] = 'admin_add_task_link'
-        bot.send_message(user_id, "🔹 Enter Task Link:", reply_markup=get_cancel_keyboard(user_id))
+        bot.send_message(user_id, "🔹 Enter Task Link (e.g. https://t.me/yourchannel):", reply_markup=get_cancel_keyboard(user_id))
 
     elif state['step'] == 'admin_add_task_link':
         state['link'] = text
@@ -680,7 +739,6 @@ def process_user_state(message):
         bot.send_message(user_id, "✅ Task added successfully!", reply_markup=get_admin_keyboard(user_id))
         USER_STATES.pop(user_id, None)
 
-    # Admin Broadcast
     elif state['step'] == 'admin_broadcast':
         conn = get_db()
         cursor = conn.cursor()
@@ -699,7 +757,6 @@ def process_user_state(message):
         bot.send_message(user_id, f"✅ Broadcast Complete!\n\nSent: {sent}\nFailed: {failed}", reply_markup=get_admin_keyboard(user_id))
         USER_STATES.pop(user_id, None)
 
-    # Admin Bonus Logic
     elif state['step'] == 'admin_bonus_id':
         if not text.isdigit():
             bot.send_message(user_id, "❌ Valid User ID (numeric) লিখুন:")
@@ -737,7 +794,6 @@ def process_user_state(message):
         bot.send_message(user_id, f"✅ User ID `{target_id}` কে `${amount:.4f}` ডলার বোনাস দেওয়া হয়েছে।", reply_markup=get_admin_keyboard(user_id))
         USER_STATES.pop(user_id, None)
 
-    # Admin Ban/Unblock Logic
     elif state['step'] == 'admin_toggle_ban_id':
         if not text.isdigit():
             bot.send_message(user_id, "❌ Valid User ID (numeric) লিখুন:")
@@ -770,7 +826,6 @@ def handle_admin_buttons(message):
     text = message.text.strip()
     clean_text = text.lower()
 
-    # Users List
     if "ইউজার্স" in text or "users" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
@@ -787,7 +842,6 @@ def handle_admin_buttons(message):
 
         bot.send_message(user_id, msg, reply_markup=markup)
 
-    # Pending Withdrawals
     elif "উইথড্র" in text or "withdraws" in clean_text or "pending" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
@@ -808,17 +862,31 @@ def handle_admin_buttons(message):
             )
             bot.send_message(user_id, w_msg, reply_markup=markup)
 
-    # Add Task
-    elif "টাস্ক" in text or "add task" in clean_text:
+    elif "টাস্ক এড" in text or "add task" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_add_task_bn'}
         bot.send_message(user_id, "🔹 Enter Task Title in Bangla:", reply_markup=get_cancel_keyboard(user_id))
 
-    # Broadcast
+    elif "টাস্ক মুছে" in text or "delete task" in clean_text or "del task" in clean_text:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM tasks WHERE status = 'active'")
+        tasks = cursor.fetchall()
+        conn.close()
+
+        if not tasks:
+            bot.send_message(user_id, "❌ মুছে ফেলার মতো কোনো সক্রিয় টাস্ক নেই!")
+            return
+
+        msg = "🗑️ **মুছে ফেলার জন্য টাস্ক নির্বাচন করুন:**"
+        markup = types.InlineKeyboardMarkup()
+        for t in tasks:
+            markup.add(types.InlineKeyboardButton(f"❌ Delete #{t['id']}: {t['title_bn']}", callback_data=f"delete_task_{t['id']}"))
+        bot.send_message(user_id, msg, reply_markup=markup)
+
     elif "ব্রডকাস্ট" in text or "broadcast" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_broadcast'}
         bot.send_message(user_id, "📢 Enter message to broadcast to ALL users:", reply_markup=get_cancel_keyboard(user_id))
 
-    # Stats
     elif "স্ট্যাটস" in text or "stats" in clean_text:
         conn = get_db()
         cursor = conn.cursor()
@@ -831,15 +899,26 @@ def handle_admin_buttons(message):
         stats_msg = f"📊 **BOT LIVE STATISTICS:**\n\n👥 Total Users: {u_cnt}\n💸 Total Paid Withdrawals: `${w_sum:.4f}`"
         bot.send_message(user_id, stats_msg)
 
-    # Give Bonus
     elif "বোনাস" in text or "bonus" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_bonus_id'}
         bot.send_message(user_id, "🔹 যে ইউজারকে বোনাস দিতে চান তার **User ID** লিখুন:", reply_markup=get_cancel_keyboard(user_id))
 
-    # Block / Unblock User
     elif "ব্লক" in text or "ban" in clean_text or "unblock" in clean_text:
         USER_STATES[user_id] = {'step': 'admin_toggle_ban_id'}
         bot.send_message(user_id, "🔹 যে ইউজারকে ব্লক বা আনব্লক করতে চান তার **User ID** লিখুন:", reply_markup=get_cancel_keyboard(user_id))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_task_"))
+def handle_delete_task(call):
+    if not check_user_access(call.from_user.id, call.message.chat.id):
+        return
+    task_id = int(call.data.split("_")[2])
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE tasks SET status = 'deleted' WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    bot.answer_callback_query(call.id, "✅ Task deleted successfully!")
+    bot.delete_message(call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("app_w_", "rej_w_")))
 def handle_withdraw_approval(call):
@@ -890,7 +969,7 @@ def auto_release_pending_rewards():
 
 Thread(target=auto_release_pending_rewards, daemon=True).start()
 
-# ================= BACKGROUND THREAD FOR TASK LEAVE MONITORING & PENALTY =================
+# ================= BACKGROUND THREAD FOR TASK LEAVE MONITORING & 5-MIN GRACE TIMER =================
 def check_task_leaving_and_penalty():
     while True:
         try:
@@ -898,7 +977,7 @@ def check_task_leaving_and_penalty():
             cursor = conn.cursor()
             now = int(time.time())
             
-            # 10 দিনের মধ্যে থাকা পেন্ডিং বা কমপ্লিটেড টাস্ক চেক
+            # 1. Detect leaves for active pending/completed tasks -> Set 5-min warning
             cursor.execute('''
                 SELECT ut.id as ut_id, ut.user_id, ut.task_id, ut.reward, ut.status as ut_status, 
                        t.title_bn, t.title_en, t.link 
@@ -912,52 +991,85 @@ def check_task_leaving_and_penalty():
                 u_id = ut['user_id']
                 channel_handle = extract_channel_handle(ut['link'])
                 
-                if channel_handle:
-                    # ইউজার এখনও টাস্কের চ্যানেলে আছে কি না চেক
-                    if not is_user_joined(u_id, channel_handle):
-                        reward = ut['reward']
-                        ut_status = ut['ut_status']
+                if channel_handle and not is_user_joined(u_id, channel_handle):
+                    cursor.execute("UPDATE user_tasks SET status = 'warning', warning_at = ? WHERE id = ?", (now, ut['ut_id']))
+                    conn.commit()
+                    
+                    u_lang = get_user_lang(u_id)
+                    task_title = ut['title_bn'] if u_lang == 'bn' else ut['title_en']
+                    warn_msg = (
+                        f"⚠️ **সতর্কবার্তা / Warning!**\n\n"
+                        f"আপনি **{task_title}** চ্যানেল থেকে বের হয়ে গেছেন!\n\n"
+                        f"⏳ আপনার কাছে **৫ মিনিট** সময় আছে পুনরায় জয়েন করার জন্য।\n"
+                        f"৫ মিনিটের মধ্যে রি-জয়েন না করলে ব্যালেন্স থেকে `${ut['reward']:.4f}` কেটে নেওয়া হবে।"
+                    )
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton("🔄 রি-জয়েন ভেরিফাই করুন", callback_data=f"rejoin_verify_{ut['ut_id']}"))
+                    try:
+                        bot.send_message(u_id, warn_msg, reply_markup=markup)
+                    except Exception:
+                        pass
+
+            # 2. Monitor warning status tasks (auto-revert if rejoined, or deduct if 5 mins expired)
+            cursor.execute('''
+                SELECT ut.id as ut_id, ut.user_id, ut.task_id, ut.reward, ut.warning_at, ut.status as ut_status,
+                       t.title_bn, t.title_en, t.link 
+                FROM user_tasks ut 
+                JOIN tasks t ON ut.task_id = t.id 
+                WHERE ut.status = 'warning'
+            ''')
+            warning_tasks = cursor.fetchall()
+
+            for ut in warning_tasks:
+                u_id = ut['user_id']
+                channel_handle = extract_channel_handle(ut['link'])
+                
+                # Auto-recovery if user rejoined on their own
+                if channel_handle and is_user_joined(u_id, channel_handle):
+                    cursor.execute("UPDATE user_tasks SET status = 'pending', warning_at = 0 WHERE id = ?", (ut['ut_id'],))
+                    conn.commit()
+                    u_lang = get_user_lang(u_id)
+                    task_title = ut['title_bn'] if u_lang == 'bn' else ut['title_en']
+                    try:
+                        bot.send_message(u_id, f"✅ **ধন্যবাদ!** আপনি **{task_title}** চ্যানেলে সফলভাবে রি-জয়েন করেছেন। আপনার ব্যালেন্স অপরিবর্তিত রয়েছে।")
+                    except Exception:
+                        pass
+                
+                # Penalty deduction if 5 minutes (300 seconds) passed without re-joining
+                elif now - ut['warning_at'] >= 300:
+                    reward = ut['reward']
+                    cursor.execute("SELECT balance, pending_balance FROM users WHERE user_id = ?", (u_id,))
+                    user_row = cursor.fetchone()
+                    
+                    if user_row:
+                        bal = user_row['balance']
+                        p_bal = user_row['pending_balance']
+                        new_p_bal = max(0.0, p_bal - reward)
+                        overflow = (reward - p_bal) if reward > p_bal else 0.0
+                        new_bal = max(0.0, bal - overflow)
                         
-                        cursor.execute("SELECT balance, pending_balance FROM users WHERE user_id = ?", (u_id,))
-                        user_row = cursor.fetchone()
-                        
-                        if user_row:
-                            bal = user_row['balance']
-                            p_bal = user_row['pending_balance']
-                            
-                            # ব্যালেন্স থেকে টাকা কেটে নেওয়া
-                            if ut_status == 'pending':
-                                new_p_bal = max(0.0, p_bal - reward)
-                                overflow = (reward - p_bal) if reward > p_bal else 0.0
-                                new_bal = max(0.0, bal - overflow)
-                                cursor.execute("UPDATE users SET pending_balance = ?, balance = ? WHERE user_id = ?", 
-                                               (new_p_bal, new_bal, u_id))
-                            else: # completed
-                                new_bal = max(0.0, bal - reward)
-                                cursor.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_bal, u_id))
-                            
-                            # টাস্ক স্ট্যাটাস 'penalized' করে দেওয়া যাতে বারবার না কাটে
-                            cursor.execute("UPDATE user_tasks SET status = 'penalized' WHERE id = ?", (ut['ut_id'],))
-                            conn.commit()
-                            
-                            # ইউজারকে সতর্কবার্তা মেসেজ পাঠানো
-                            u_lang = get_user_lang(u_id)
-                            task_title = ut['title_bn'] if u_lang == 'bn' else ut['title_en']
-                            warn_msg = TEXTS[u_lang]['task_leave_warning'].format(task_title=task_title, reward=reward)
-                            try:
-                                bot.send_message(u_id, warn_msg)
-                            except Exception:
-                                pass
+                        cursor.execute("UPDATE users SET pending_balance = ?, balance = ? WHERE user_id = ?", 
+                                       (new_p_bal, new_bal, u_id))
+                    
+                    cursor.execute("UPDATE user_tasks SET status = 'penalized' WHERE id = ?", (ut['ut_id'],))
+                    conn.commit()
+
+                    u_lang = get_user_lang(u_id)
+                    task_title = ut['title_bn'] if u_lang == 'bn' else ut['title_en']
+                    try:
+                        bot.send_message(u_id, f"❌ **সময় পার হয়ে গেছে!** আপনি ৫ মিনিটের মধ্যে **{task_title}** চ্যানেলে রি-জয়েন না করায় `${reward:.4f}` ডলার কেটে নেওয়া হলো।")
+                    except Exception:
+                        pass
 
             conn.close()
         except Exception as e:
             logging.error(f"Error in task leaving penalty check: {e}")
         
-        time.sleep(120)  # প্রতি ২ মিনিট পর পর ব্যাকগ্রাউন্ড চেক চলবে
+        time.sleep(30)
 
 Thread(target=check_task_leaving_and_penalty, daemon=True).start()
 
 # ================= BOT RUNNER =================
 if __name__ == "__main__":
-    print("🤖 Bot started successfully with strict security & task tracking...")
+    print("🤖 Bot started successfully with 5-minute grace period logic...")
     bot.infinity_polling()
